@@ -1,24 +1,37 @@
 #!/usr/bin/env bash
-# Tool: gpa — update local Git repositories with one shared shell command.
-# Called by: the user on demand (gpa [-av]), not shell startup.
-# Purpose: pull repositories directly under HOME and HOME/repos, including
-#   hidden directories, directory symlinks, and linked worktrees; summarize
-#   updates, unchanged repositories, skips, failures, and warnings.
-# Cooperates with: Git and sed; install.sh links this executable onto PATH.
-#   Both zsh and fish use the same implementation.
-# Effects: runs git pull --ff-only for branches with an upstream, contacting
-#   remotes and potentially updating Git state and working-tree files.
-#   Repositories without an upstream are skipped. Git terminal prompts are
-#   disabled; this is an update command, not a read-only status check.
-# Output/status: compact results by default, details with -v; exit 1 if any
-#   pull fails, 2 for invalid arguments, otherwise 0 (including skips).
-# Requires: Bash, Git, sed, SSH for -a, and required authentication.
+# Tool/intent: gpa keeps a collection of checkouts up to date with a single
+#   command and a readable summary. Its shallow search paths reflect the
+#   current personal workflow; they are defaults to revisit as needs change.
+# Invocation: execute gpa [-a|--all] [-v|--verbose], including -av or -va;
+#   -h/--help prints usage. Called on demand by a user or by gpa over SSH.
+#   Execute rather than source: this script changes shell state and may exit.
+# Inputs: local mode searches HOME and HOME/repos, independent of cwd.
+#   Remote mode reads GPA_HOSTS_FILE when nonempty, otherwise
+#   ${XDG_CONFIG_HOME:-$HOME/.config}/gpa/hosts. Hosts are SSH destinations;
+#   the file is data, not shell code. Nonempty NO_COLOR disables summary color.
+# Interactions: install.sh links this executable into ~/.local/bin; the user
+#   manages PATH, host configuration, and Git/SSH authentication separately.
+#   Remote hosts need gpa on their noninteractive PATH. Only -v is forwarded;
+#   each host uses its own HOME, repository state, and Git configuration.
+# Effects: git pull --ff-only contacts upstreams and can change Git state and
+#   working trees. Existing hooks, helpers, and autostash settings still apply.
+#   Repeated runs pull again; there is no rollback of earlier successful pulls.
+#   Git terminal prompts are disabled, but SSH/helpers may still prompt or wait.
+# Output/status: results and summaries go to stdout, argument/configuration
+#   errors and host failure notices to stderr. Pull diagnostics are captured
+#   in results. Exit 0 includes skips; 1 means a pull/SSH/remote command failed;
+#   2 means invalid arguments or local host configuration. Failures do not stop
+#   later repositories/hosts. Remote mode has no additional local update.
+# Requires: Bash, Git, sed; SSH for -a and whoami/hostname on remote hosts.
+#   The current implementation is tested on Linux and shared by zsh and fish.
 
 # Parse the entire implementation before running pulls, so updating this
 # checkout cannot change code halfway through the current invocation.
 main() {
 
-# Keep Git diagnostics stable for the summary parser.
+# Failure statuses are collected explicitly rather than using errexit;
+# arithmetic increments can also return nonzero during normal execution.
+# Use the C locale because the diagnostic filters below match English text.
 export LC_ALL=C
 
 declare verbose=0 all_hosts=0 arg flags
@@ -51,6 +64,8 @@ done
 
 if (( all_hosts )); then
     declare host remote_status=0
+    # Keep shell syntax fixed and expand identity on the remote host. Forward
+    # verbosity only: forwarding -a would recursively dispatch to more hosts.
     declare remote_command='printf "\n%s@%s\n\n" "$(whoami)" "$(hostname)"; gpa'
     (( verbose )) && remote_command+=' -v'
     declare hosts_file=${GPA_HOSTS_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/gpa/hosts}
@@ -59,6 +74,10 @@ if (( all_hosts )); then
         printf 'gpa: cannot read hosts file: %s\n' "$hosts_file" >&2
         return 2
     fi
+    # Validate the entire file first so a bad later entry does not leave an
+    # already-started update across earlier hosts. This intentionally narrow
+    # format excludes leading SSH options and shell syntax; aliases can cover
+    # destinations requiring more elaborate SSH configuration.
     while IFS= read -r host || [[ -n "$host" ]]; do
         [[ "$host" =~ ^[[:space:]]*(#.*)?$ ]] && continue
         if [[ ! "$host" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.@:-]*$ ]]; then
@@ -71,6 +90,8 @@ if (( all_hosts )); then
         printf 'gpa: no hosts configured in %s\n' "$hosts_file" >&2
         return 2
     fi
+    # Sequential dispatch keeps each host's output together, at the cost of
+    # letting a slow connection delay later hosts. SSH owns timeout policy.
     for host in "${hosts[@]}"; do
         if ! ssh -q "$host" "$remote_command"; then
             printf 'gpa: failed on %s\n' "$host" >&2
@@ -86,8 +107,10 @@ declare repo_status reason max_label_len=24
 declare forced_update autostash
 declare -a repos
 
-# Pull one repo and emit a compact, structured result. The complete git
-# output is kept only long enough to extract useful details for -v.
+# Pull $1 and print its result, updating main's counters and scratch variables
+# through Bash's dynamic scope. The aggregate failed count, not this helper's
+# return value, determines the command status. Captured output supplies details
+# in verbose mode and failure diagnostics in either mode.
 __gpa_pull() {
     repo="$1"
     label="~/${repo#$HOME/}"
@@ -102,6 +125,9 @@ __gpa_pull() {
         fi
     fi
 
+    # Follow the checked-out branch's upstream rather than guessing a remote
+    # or switching branches. An unavailable upstream is reported as a skip;
+    # this probe does not distinguish missing configuration from other errors.
     if ! git -C "$repo" rev-parse --abbrev-ref '@{upstream}' &> /dev/null; then
         (( skipped++ ))
         repo_status="SKIPPED"
@@ -129,6 +155,9 @@ __gpa_pull() {
         fi
     fi
 
+    # Determine success from Git's status and change from HEAD movement.
+    # Capturing output keeps per-repository results together; --ff-only avoids
+    # creating a merge commit for diverged branches, but does not bypass config.
     before=$(git -C "$repo" rev-parse HEAD 2> /dev/null)
     pull_output=$(GIT_TERMINAL_PROMPT=0 git -C "$repo" pull --ff-only 2>&1)
     pull_status=$?
@@ -140,7 +169,9 @@ __gpa_pull() {
     fi
 
     # Keep branch movement, pull result, warnings, and the one-line stat;
-    # omit object transfer progress and the long per-file listing.
+    # omit object transfer progress and the long per-file listing. These are
+    # best-effort text filters, not a structured Git API; new wording may need
+    # updates. A failure uses full output only if no filtered details survive.
     details=$(printf '%s\n' "$pull_output" | sed -n -E \
         -e '/^From /p' \
         -e '/^[[:space:]]*[+*]?[[:space:]]*[0-9a-f]+\.\.[0-9a-f]+[[:space:]]/p' \
@@ -172,6 +203,8 @@ __gpa_pull() {
         (( current++ ))
     fi
 
+    # Count warning categories, not repositories: one repository may increment
+    # several categories. These annotations do not determine the exit status.
     if (( forced_update )); then
         reason+="; remote forced update"
         (( warnings++ ))
@@ -213,8 +246,10 @@ __gpa_pull() {
     fi
 }
 
-# Discover direct child repositories, including hidden paths, symlinks and
-# linked worktrees (whose .git entry is a file).
+# The current layout scans direct children only, including hidden paths,
+# directory symlinks, and linked worktrees (.git files). No canonical-path
+# deduplication is performed, so aliases can pull the same checkout twice.
+# nullglob avoids treating an unmatched pattern as a repository candidate.
 shopt -s nullglob dotglob
 repos=()
 for repo in "$HOME"/* "$HOME"/repos/*; do
