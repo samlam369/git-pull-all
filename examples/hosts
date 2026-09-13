@@ -1,0 +1,4 @@
+# One SSH destination per line, in execution order. Blank lines are ignored.
+# Configure SSH aliases and authentication in ~/.ssh/config.
+# server-one
+# user@server-two

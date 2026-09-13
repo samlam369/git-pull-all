@@ -1,0 +1,257 @@
+#!/usr/bin/env bash
+# Tool: gpa — update local Git repositories with one shared shell command.
+# Called by: the user on demand (gpa [-av]), not shell startup.
+# Purpose: pull repositories directly under HOME and HOME/repos, including
+#   hidden directories, directory symlinks, and linked worktrees; summarize
+#   updates, unchanged repositories, skips, failures, and warnings.
+# Cooperates with: Git and sed; install.sh links this executable onto PATH.
+#   Both zsh and fish use the same implementation.
+# Effects: runs git pull --ff-only for branches with an upstream, contacting
+#   remotes and potentially updating Git state and working-tree files.
+#   Repositories without an upstream are skipped. Git terminal prompts are
+#   disabled; this is an update command, not a read-only status check.
+# Output/status: compact results by default, details with -v; exit 1 if any
+#   pull fails, 2 for invalid arguments, otherwise 0 (including skips).
+# Requires: Bash, Git, sed, SSH for -a, and required authentication.
+
+# Parse the entire implementation before running pulls, so updating this
+# checkout cannot change code halfway through the current invocation.
+main() {
+
+# Keep Git diagnostics stable for the summary parser.
+export LC_ALL=C
+
+declare verbose=0 all_hosts=0 arg flags
+for arg in "$@"; do
+    case "$arg" in
+        --help|-h)
+            printf '%s\n' 'Usage: gpa [-a|--all] [-v|--verbose]' \
+                'Pull repositories under ~ and ~/repos with --ff-only.' \
+                '-a: run on hosts from ${XDG_CONFIG_HOME:-$HOME/.config}/gpa/hosts.' \
+                'GPA_HOSTS_FILE overrides the hosts file. Combine flags as -av.'
+            return 0
+            ;;
+        --verbose) verbose=1 ;;
+        --all) all_hosts=1 ;;
+        -[av]*)
+            flags=${arg#-}
+            if [[ "$flags" == *[!av]* ]]; then
+                printf '%s\n' "Usage: gpa [-a|--all] [-v|--verbose]" >&2
+                exit 2
+            fi
+            [[ "$flags" == *a* ]] && all_hosts=1
+            [[ "$flags" == *v* ]] && verbose=1
+            ;;
+        *)
+            printf '%s\n' "Usage: gpa [-a|--all] [-v|--verbose]" >&2
+            exit 2
+            ;;
+    esac
+done
+
+if (( all_hosts )); then
+    declare host remote_status=0
+    declare remote_command='printf "\n%s@%s\n\n" "$(whoami)" "$(hostname)"; gpa'
+    (( verbose )) && remote_command+=' -v'
+    declare hosts_file=${GPA_HOSTS_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/gpa/hosts}
+    declare -a hosts=()
+    if [[ ! -r "$hosts_file" ]]; then
+        printf 'gpa: cannot read hosts file: %s\n' "$hosts_file" >&2
+        return 2
+    fi
+    while IFS= read -r host || [[ -n "$host" ]]; do
+        [[ "$host" =~ ^[[:space:]]*(#.*)?$ ]] && continue
+        if [[ ! "$host" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.@:-]*$ ]]; then
+            printf 'gpa: invalid host in %s: %s\n' "$hosts_file" "$host" >&2
+            return 2
+        fi
+        hosts+=("$host")
+    done < "$hosts_file"
+    if (( ${#hosts[@]} == 0 )); then
+        printf 'gpa: no hosts configured in %s\n' "$hosts_file" >&2
+        return 2
+    fi
+    for host in "${hosts[@]}"; do
+        if ! ssh -q "$host" "$remote_command"; then
+            printf 'gpa: failed on %s\n' "$host" >&2
+            remote_status=1
+        fi
+    done
+    exit "$remote_status"
+fi
+
+declare total=0 updated=0 current=0 skipped=0 failed=0 warnings=0
+declare repo label branch pull_output pull_status before after details line
+declare repo_status reason max_label_len=24
+declare forced_update autostash
+declare -a repos
+
+# Pull one repo and emit a compact, structured result. The complete git
+# output is kept only long enough to extract useful details for -v.
+__gpa_pull() {
+    repo="$1"
+    label="~/${repo#$HOME/}"
+    (( total++ ))
+
+    branch=$(git -C "$repo" branch --show-current 2> /dev/null)
+    if [[ -z "$branch" ]]; then
+        local head_hash
+        head_hash=$(git -C "$repo" rev-parse --short HEAD 2> /dev/null)
+        if [[ -n "$head_hash" ]]; then
+            branch="detached@$head_hash"
+        fi
+    fi
+
+    if ! git -C "$repo" rev-parse --abbrev-ref '@{upstream}' &> /dev/null; then
+        (( skipped++ ))
+        repo_status="SKIPPED"
+        reason="no upstream"
+        if (( verbose )); then
+            printf '%s\n' "[$repo_status] $label"
+            [[ -n "$branch" ]] && printf '%s\n' "  Branch: $branch"
+            printf '%s\n' "  Result: $reason"
+            printf '%s\n' ""
+        else
+            if [[ -n "$branch" ]]; then
+                printf '[%-7s] %-*s  %-20s  (%s)\n' "$repo_status" "$max_label_len" "$label" "$reason" "$branch"
+            else
+                printf '[%-7s] %-*s  %-20s\n' "$repo_status" "$max_label_len" "$label" "$reason"
+            fi
+        fi
+        return
+    fi
+
+    if [[ -t 1 ]]; then
+        if [[ -n "$branch" ]]; then
+            printf '\r\033[K[%-7s] %s (%s)' "FETCH" "$label" "$branch"
+        else
+            printf '\r\033[K[%-7s] %s' "FETCH" "$label"
+        fi
+    fi
+
+    before=$(git -C "$repo" rev-parse HEAD 2> /dev/null)
+    pull_output=$(GIT_TERMINAL_PROMPT=0 git -C "$repo" pull --ff-only 2>&1)
+    pull_status=$?
+    pull_output=${pull_output//$'\r'/}
+    after=$(git -C "$repo" rev-parse HEAD 2> /dev/null)
+
+    if [[ -t 1 ]]; then
+        printf '\r\033[K'
+    fi
+
+    # Keep branch movement, pull result, warnings, and the one-line stat;
+    # omit object transfer progress and the long per-file listing.
+    details=$(printf '%s\n' "$pull_output" | sed -n -E \
+        -e '/^From /p' \
+        -e '/^[[:space:]]*[+*]?[[:space:]]*[0-9a-f]+\.\.[0-9a-f]+[[:space:]]/p' \
+        -e '/^(Updating [0-9a-zA-Z]|Fast-forward$|Already up[- ]to[- ]date\.$|Successfully rebased|Created autostash|Applied autostash\.|[[:space:]]*[0-9,]+ files? changed|CONFLICT|error:|fatal:|warning:)/p')
+
+    forced_update=0
+    autostash=0
+    [[ "$pull_output" == *"(forced update)"* ]] && forced_update=1
+    [[ "$pull_output" == *"Created autostash"* ]] && autostash=1
+
+    if (( pull_status != 0 )); then
+        repo_status="FAILED"
+        reason="git pull failed (exit $pull_status)"
+        details="${details:-$pull_output}"
+        (( failed++ ))
+    elif [[ "$before" != "$after" ]]; then
+        repo_status="UPDATED"
+        (( updated++ ))
+        if [[ "$pull_output" == *"Successfully rebased"* ]]; then
+            reason="rebased"
+        elif [[ "$pull_output" == *"Fast-forward"* ]]; then
+            reason="fast-forward"
+        else
+            reason="updated"
+        fi
+    else
+        repo_status="CURRENT"
+        reason="already up to date"
+        (( current++ ))
+    fi
+
+    if (( forced_update )); then
+        reason+="; remote forced update"
+        (( warnings++ ))
+    fi
+    if (( autostash )); then
+        if [[ "$pull_output" == *"Applied autostash."* ]]; then
+            reason+="; local changes restored"
+        else
+            reason+="; autostash needs attention"
+            (( warnings++ ))
+        fi
+    fi
+    if [[ "$pull_output" == *"warning:"* ]]; then
+        reason+="; git warning"
+        (( warnings++ ))
+    fi
+
+    if (( verbose )); then
+        printf '%s\n' "[$repo_status] $label"
+        [[ -n "$branch" ]] && printf '%s\n' "  Branch: $branch"
+        printf '%s\n' "  Result: $reason"
+        if [[ -n "$details" ]]; then
+            while IFS= read -r line; do
+                [[ -n "$line" ]] && printf '%s\n' "  $line"
+            done <<< "$details"
+        fi
+        printf '%s\n' ""
+    else
+        if [[ -n "$branch" ]]; then
+            printf '[%-7s] %-*s  %-20s  (%s)\n' "$repo_status" "$max_label_len" "$label" "$reason" "$branch"
+        else
+            printf '[%-7s] %-*s  %-20s\n' "$repo_status" "$max_label_len" "$label" "$reason"
+        fi
+        if [[ "$repo_status" == "FAILED" && -n "$details" ]]; then
+            while IFS= read -r line; do
+                [[ -n "$line" ]] && printf '%s\n' "  $line"
+            done <<< "$details"
+        fi
+    fi
+}
+
+# Discover direct child repositories, including hidden paths, symlinks and
+# linked worktrees (whose .git entry is a file).
+shopt -s nullglob dotglob
+repos=()
+for repo in "$HOME"/* "$HOME"/repos/*; do
+    [[ -d "$repo" && ( -d "$repo/.git" || -f "$repo/.git" ) ]] && repos+=("$repo")
+done
+
+# Calculate maximum label width dynamically for clean column alignment
+for repo in "${repos[@]}"; do
+    declare l="~/${repo#$HOME/}"
+    (( ${#l} > max_label_len )) && max_label_len=${#l}
+done
+
+for repo in "${repos[@]}"; do
+    __gpa_pull "$repo"
+done
+
+
+declare updated_text="$updated updated" current_text="$current current"
+declare failed_text="$failed failed" warning_text="$warnings warnings"
+declare first_width=${#updated_text}
+(( ${#failed_text} > first_width )) && first_width=${#failed_text}
+# Pad before adding ANSI colors so escape sequences do not affect alignment.
+printf -v updated_text '%-*s' "$first_width" "$updated_text"
+printf -v failed_text '%-*s' "$first_width" "$failed_text"
+if [[ -t 1 && "${TERM:-dumb}" != dumb && -z "${NO_COLOR:-}" ]]; then
+    (( failed > 0 )) && failed_text=$'\e[31m'"$failed_text"$'\e[0m'
+    (( warnings > 0 )) && warning_text=$'\e[33m'"$warning_text"$'\e[0m'
+fi
+
+# Verbose repo blocks already end with a blank line.
+(( ! verbose || total == 0 )) && printf '%s\n' ""
+printf 'gpa summary: %d repos\n' "$total"
+printf '  %s | %s | %d skipped\n' "$updated_text" "$current_text" "$skipped"
+printf '  %s | %s\n' "$failed_text" "$warning_text"
+
+(( failed == 0 ))
+
+}
+
+main "$@"
