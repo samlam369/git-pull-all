@@ -149,12 +149,13 @@ live, and results do not reorder when a host finishes. When all output is
 drained, the interface closes automatically and prints the complete grouped
 report into normal terminal scrollback.
 
-The first usable live interface has two known visual limitations. It currently
-uses Textual's dark palette instead of following the terminal's color scheme,
-and scrolling beyond the visible area is not reliable while refreshes are
-active. The complete report remains available in normal terminal scrollback
-after the run. Terminal-aware styling and live keyboard/mouse scrolling are
-tracked as follow-up UAC work in `docs/parallel-hosts.md`.
+The live interface uses the terminal's default foreground/background and ANSI
+palette, including the scrollbar, so light/dark colors and transparency remain
+terminal-controlled. Visual confirmation of the reported inter-row background
+seams remains pending on the affected terminal. Scrolling beyond the visible
+area is still not reliable while refreshes are active; the complete report is
+available in normal terminal scrollback after the run. Follow-up UAC work is
+tracked in `docs/parallel-hosts.md`.
 
 Each host has a separate lifecycle (`starting`, `running`, `completed`,
 `failed`, or `interrupted`). A failed repository does not finish its host; the

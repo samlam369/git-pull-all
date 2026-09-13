@@ -325,10 +325,16 @@ maintainer's environment.
 
 ### Known gaps
 
-1. **Terminal color integration:** the live Textual screen currently uses its
-   default dark palette/background rather than following the terminal color
-   scheme. A follow-up should use terminal-aware or transparent styling and
-   verify light and dark terminals plus `NO_COLOR` behavior.
+1. **Terminal color integration — fix implemented, visual UAC pending:** the
+   default Textual RGB theme caused a dark background on light terminals.
+   The app now enables native ANSI colors and the scrollbar's ANSI styles,
+   preserving terminal-default foreground/background instead of painting fixed
+   RGB colors. A PTY regression checks the live screen for default-background
+   resets and rejects RGB/indexed palette substitutions. User screenshots also
+   showed light seams between rows; contrasting application and terminal
+   backgrounds are a plausible cause, not a confirmed terminal-renderer
+   diagnosis. Verify those seams disappear on the affected terminal, and check
+   light/dark palettes, transparency, and `NO_COLOR` during final visual UAC.
 2. **Scrolling during live updates:** keyboard and mouse scrolling cannot
    reliably reach content outside the visible area while refreshes continue.
    The current logical-anchor restoration is a likely interaction point. A fix

@@ -349,9 +349,9 @@ def run_live(hosts: list[str], command: str, color: bool) -> tuple[list[HostStat
         pass
 
     class ReportApp(App[None]):
-        # Textual's default palette currently gives the live screen a dark
-        # background. Terminal-aware/transparent colors remain explicit UAC
-        # follow-up work in docs/parallel-hosts.md.
+        # Native ANSI defaults let the terminal own foreground/background,
+        # including light palettes and transparency. RGB theme backgrounds
+        # can contrast with terminal-painted gaps between character rows.
         CSS = """
         Screen { layout: vertical; }
         #status { dock: top; height: 1; padding: 0 1; text-style: bold; }
@@ -362,7 +362,7 @@ def run_live(hosts: list[str], command: str, color: bool) -> tuple[list[HostStat
         BINDINGS = [("ctrl+c", "interrupt", "Interrupt")]
 
         def __init__(self) -> None:
-            super().__init__()
+            super().__init__(ansi_color=True)
             self.dispatcher = Dispatcher(hosts, command, self.receive)
             self.dirty: set[int] = set(range(len(hosts)))
             self.runner: asyncio.Task[None] | None = None
@@ -370,7 +370,9 @@ def run_live(hosts: list[str], command: str, color: bool) -> tuple[list[HostStat
 
         def compose(self) -> ComposeResult:
             yield Static("", id="status", markup=False)
-            with VerticalScroll(id="report"):
+            # Opt the scrollbar into Textual's native ANSI track/thumb styles
+            # as well; otherwise it retains the default theme's RGB colors.
+            with VerticalScroll(id="report", classes="-ansi-scrollbar"):
                 for host in self.dispatcher.hosts:
                     yield HostReport("", id=f"host-{host.index}", markup=False)
 

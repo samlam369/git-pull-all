@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import pty
+import re
 import select
 import signal
 import subprocess
@@ -375,6 +376,37 @@ class GpaTests(unittest.TestCase):
         self.assertIn("[HOST   ] overflow  (1/1)", output)
         self.assertIn("line-000-", output); self.assertIn("line-079-", output)
         self.assertIn("\x1b[?1049h", output); self.assertIn("\x1b[?1049l", output)
+        # Inspect actual live terminal output, not just the final plain report.
+        # Native defaults must survive rendering instead of becoming a dark
+        # RGB palette, regardless of the terminal's own light/dark colors.
+        live = output.split("\x1b[?1049h", 1)[1].split("\x1b[?1049l", 1)[0]
+        self.assertRegex(live, r"\x1b\[[0-9;]*49[;m]")
+        for sgr in re.findall(r"\x1b\[([0-9;]*)m", live):
+            self.assertNotRegex(sgr, r"(?:^|;)(?:38|48);(?:2|5);")
+
+    def test_live_terminal_palette_with_and_without_color(self):
+        try:
+            import textual  # noqa: F401
+        except ImportError:
+            self.skipTest("Textual is not installed")
+        self.hosts("palette-fixture\n")
+        self.write_ssh("print('1 failed | 1 warnings', flush=True)\ntime.sleep(.2)\n")
+        for no_color in (False, True):
+            with self.subTest(no_color=no_color):
+                self.env.update(TERM="xterm-256color", GPA_COLOR="always")
+                if no_color:
+                    self.env["NO_COLOR"] = "1"
+                else:
+                    self.env.pop("NO_COLOR", None)
+                status, output = self.run_full_pty("-a")
+                self.assertEqual(status, 0, output)
+                live = output.split("\x1b[?1049h", 1)[1].split("\x1b[?1049l", 1)[0]
+                sgrs = re.findall(r"\x1b\[([0-9;]*)m", live)
+                for sgr in sgrs:
+                    self.assertNotRegex(sgr, r"(?:^|;)(?:38|48);(?:2|5);")
+                has_status_color = any(
+                    re.search(r"(?:^|;)(?:31|33)(?:;|$)", sgr) for sgr in sgrs)
+                self.assertEqual(has_status_color, not no_color)
 
     def test_plain_sigint_returns_130_and_reaps_workers(self):
         self.hosts("slow-a\nslow-b\n")
