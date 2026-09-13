@@ -7,9 +7,10 @@
 # No real SSH or Git runs, and user repositories/configuration are untouched.
 # Fixtures cover successful updates, skips, warnings, pull and SSH failures,
 # and an empty host after failures. Repeated runs start fresh and clean up on
-# exit. Output follows gpa's color policy, including NO_COLOR; remote output
-# is piped just as in real -a mode. Exit 1 is expected; invalid options exit 2,
-# and setup errors stop immediately. Verbosity is forwarded to remote fixtures.
+# exit. Output follows gpa's color and progress policies, including NO_COLOR;
+# remote output is piped just as in real -a mode. Exit 1 is expected; invalid
+# options exit 2, and setup errors stop immediately. Verbosity is forwarded
+# to remote fixtures.
 set -eu
 
 case "${1:-}" in
@@ -43,13 +44,18 @@ case "$2" in
         exit 255 ;;
     server-ok|server-mixed|server-empty)
         case "$3" in
-            'env GPA_COLOR=always gpa'|'env GPA_COLOR=always gpa -v') color=always ;;
-            'env GPA_COLOR=never gpa'|'env GPA_COLOR=never gpa -v') color=never ;;
+            'env GPA_COLOR=always GPA_PROGRESS='*) color=always ;;
+            'env GPA_COLOR=never GPA_PROGRESS='*) color=never ;;
+            *) exit 2 ;;
+        esac
+        case "$3" in
+            *' GPA_PROGRESS=always gpa'|*' GPA_PROGRESS=always gpa -v') progress=always ;;
+            *' GPA_PROGRESS=never gpa'|*' GPA_PROGRESS=never gpa -v') progress=never ;;
             *) exit 2 ;;
         esac
         flags=()
         [[ "$3" != *' -v' ]] || flags=(-v)
-        HOME="$GPA_DEMO_ROOT/$2" GPA_COLOR="$color" bash "$GPA_DEMO_EXECUTABLE" "${flags[@]}" ;;
+        HOME="$GPA_DEMO_ROOT/$2" GPA_COLOR="$color" GPA_PROGRESS="$progress" bash "$GPA_DEMO_EXECUTABLE" "${flags[@]}" ;;
     *) exit 2 ;;
 esac
 MOCK

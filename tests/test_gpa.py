@@ -30,7 +30,7 @@ class GpaTests(unittest.TestCase):
                         SSH_LOG=str(self.log), GIT_CONFIG_NOSYSTEM="1",
                         GIT_CONFIG_GLOBAL="/dev/null")
         for key in ("GPA_HOSTS_FILE", "SSH_FAIL_HOST", "SSH_FAIL_STATUS", "SSH_STDOUT",
-                    "SSH_VERBOSE_STDOUT", "SSH_STDERR", "NO_COLOR", "GPA_COLOR"):
+                    "SSH_VERBOSE_STDOUT", "SSH_STDERR", "NO_COLOR", "GPA_COLOR", "GPA_PROGRESS"):
             self.env.pop(key, None)
         ssh = self.mock_bin / "ssh"
         ssh.write_text("#!/usr/bin/env python3\nimport json, os, sys\n"
@@ -67,7 +67,7 @@ class GpaTests(unittest.TestCase):
                 self.assertEqual([call[1] for call in calls], ["node-00", "user@server.example", "NODE4"])
                 for call in calls:
                     self.assertEqual(call[0], "-q")
-                    self.assertEqual(call[2], "env GPA_COLOR=never gpa" + (" -v" if any("v" in flag for flag in flags) else ""))
+                    self.assertEqual(call[2], "env GPA_COLOR=never GPA_PROGRESS=never gpa" + (" -v" if any("v" in flag for flag in flags) else ""))
 
     def test_remote_host_blocks_preserve_normal_and_verbose_output(self):
         self.hosts("first\nlast\n")
@@ -118,7 +118,7 @@ class GpaTests(unittest.TestCase):
         self.assertEqual(result.stderr, "    ssh: connection failed\n    gpa: failed on broken\n")
         self.assertNotIn("\x1b[", result.stdout)
 
-    def run_pty(self, script, *args):
+    def run_pty(self, script, *args, on_output=None):
         # Drain concurrently: verbose demo output can fill the PTY buffer and
         # block the child before it exits. Closing the slave gives EOF/EIO.
         master, slave = pty.openpty()
@@ -135,6 +135,8 @@ class GpaTests(unittest.TestCase):
                 if not chunk:
                     break
                 chunks.append(chunk)
+                if on_output is not None:
+                    on_output(b"".join(chunks))
 
         reader = threading.Thread(target=drain)
         reader.start()
@@ -149,6 +151,114 @@ class GpaTests(unittest.TestCase):
             os.close(master)
         return result, b"".join(chunks).decode().replace("\r\n", "\n")
 
+    def mock_progress_pull(self):
+        # Execute the real remote gpa through a pipe, as SSH would, while Git
+        # waits for the test reader to acknowledge the visible FETCH status.
+        (self.home / "repos/project/.git").mkdir(parents=True)
+        (self.mock_bin / "gpa").symlink_to(ROOT / "bin/gpa")
+        self.env["PULL_RELEASE"] = str(self.base / "release")
+        ssh = self.mock_bin / "ssh"
+        ssh.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, shlex, sys\n"
+            "os.environ['GPA_PROGRESS'] = 'always'\n"
+            "args = shlex.split(sys.argv[3])\n"
+            "os.execvp(args[0], args)\n"
+        )
+        git = self.mock_bin / "git"
+        git.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, pathlib, sys, time\n"
+            "args = sys.argv[3:]\n"
+            "if args == ['branch', '--show-current']:\n"
+            "    print('main')\n"
+            "elif args == ['rev-parse', '--abbrev-ref', '@{upstream}']:\n"
+            "    print('origin/main')\n"
+            "elif args == ['rev-parse', 'HEAD']:\n"
+            "    print('aaaaaaa')\n"
+            "elif args == ['pull', '--ff-only']:\n"
+            "    deadline = time.monotonic() + 5\n"
+            "    while not pathlib.Path(os.environ['PULL_RELEASE']).exists():\n"
+            "        if time.monotonic() > deadline:\n"
+            "            print('fatal: FETCH never reached the reader')\n"
+            "            sys.exit(9)\n"
+            "        time.sleep(0.01)\n"
+            "    status = int(os.environ.get('PULL_STATUS', '0'))\n"
+            "    print('fatal: simulated pull failure' if status else 'Already up to date.')\n"
+            "    sys.exit(status)\n"
+            "else:\n"
+            "    sys.exit(2)\n"
+        )
+        git.chmod(0o755)
+
+    def test_remote_fetch_is_visible_before_pull_finishes(self):
+        self.hosts("example-host\n")
+        self.mock_progress_pull()
+        self.env.update(NO_COLOR="1", TERM="xterm")
+        for flags in (("-a",), ("-av",)):
+            for status in (0, 1):
+                with self.subTest(flags=flags, status=status):
+                    release = Path(self.env["PULL_RELEASE"])
+                    release.unlink(missing_ok=True)
+                    self.env["PULL_STATUS"] = str(status)
+                    snapshots = []
+
+                    def acknowledge_fetch(output):
+                        if b"[FETCH  ] ~/repos/project (main)" in output and not snapshots:
+                            snapshots.append(output)
+                            release.touch()
+
+                    result, output = self.run_pty("bin/gpa", *flags,
+                                                  on_output=acknowledge_fetch)
+                    self.assertTrue(snapshots, output)
+                    self.assertNotIn(b"[CURRENT", snapshots[0])
+                    self.assertNotIn(b"[FAILED", snapshots[0])
+                    self.assertEqual(result.returncode, status, output)
+                    final = "FAILED" if status else "CURRENT"
+                    self.assertIn("\r\x1b[K    [FETCH  ] ~/repos/project (main)"
+                                  f"\r\x1b[K    [{final}", output)
+                    self.assertNotIn("FETCH never reached", output)
+                    if status:
+                        self.assertIn("fatal: simulated pull failure", output)
+                        self.assertIn("gpa hosts: 0/1 completed", output)
+                    else:
+                        self.assertIn("gpa hosts: 1/1 completed", output)
+
+    def test_piped_remote_output_disables_inherited_progress(self):
+        self.hosts("example-host\n")
+        self.mock_progress_pull()
+        Path(self.env["PULL_RELEASE"]).touch()
+        result = self.run_gpa("-a")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("    [CURRENT] ~/repos/project", result.stdout)
+        self.assertNotIn("[FETCH", result.stdout)
+        self.assertNotIn("\x1b[", result.stdout)
+
+    def test_remote_disconnect_ends_pending_fetch_line(self):
+        self.hosts("broken\n")
+        self.env.update(SSH_FAIL_HOST="broken", NO_COLOR="1",
+                        SSH_STDOUT="\r\x1b[K[FETCH  ] ~/repos/project (main)\n")
+        result, output = self.run_pty("bin/gpa", "-a")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("\r\x1b[K    [FETCH  ] ~/repos/project (main)\n"
+                      "    [FAILED ] broken  ssh or remote gpa failed", output)
+        self.assertIn("gpa hosts: 0/1 completed", output)
+
+    def test_local_progress_policy(self):
+        self.mock_progress_pull()
+        Path(self.env["PULL_RELEASE"]).touch()
+        self.env.update(NO_COLOR="1", GPA_PROGRESS="never")
+        result, output = self.run_pty("bin/gpa")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("[FETCH", output)
+        self.assertNotIn("\x1b[", output)
+        self.env["GPA_PROGRESS"] = "always"
+        result = subprocess.run(["bash", str(ROOT / "bin/gpa")],
+                                env=self.env, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(b"\r\x1b[K[FETCH  ] ~/repos/project (main)\n", result.stdout)
+        self.assertIn(b"\r\x1b[K[CURRENT]", result.stdout)
+
     def test_remote_summary_color_respects_terminal_and_no_color(self):
         self.hosts("broken\n")
         self.env["SSH_FAIL_HOST"] = "broken"
@@ -162,7 +272,7 @@ class GpaTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertIn("gpa hosts: 0/1 completed", output)
                 self.assertEqual(self.calls()[0][2],
-                                 f"env GPA_COLOR={'always' if colored else 'never'} gpa")
+                                 f"env GPA_COLOR={'always' if colored else 'never'} GPA_PROGRESS=always gpa")
                 if colored:
                     self.assertIn("\x1b[31mNeeds attention: broken\x1b[0m", output)
                 else:
@@ -177,7 +287,7 @@ class GpaTests(unittest.TestCase):
         self.assertTrue(result.stdout.endswith(
             "\ngpa hosts: 1/3 completed\n    Needs attention: zebra, alpha\n"))
 
-    def test_demo_color_reaches_host_summaries_without_terminal_progress(self):
+    def test_demo_color_and_progress_reach_host_output(self):
         for flags in ((), ("-v",)):
             for term, no_color, colored in (("xterm", "", True),
                                             ("dumb", "", False),
@@ -186,14 +296,13 @@ class GpaTests(unittest.TestCase):
                     self.env.update(TERM=term, NO_COLOR=no_color)
                     result, output = self.run_pty("examples/demo-output.sh", *flags)
                     self.assertEqual(result.returncode, 1, result.stderr)
-                    self.assertNotIn("[FETCH", output)
-                    self.assertNotIn("\x1b[2K", output)
+                    self.assertIn("\r\x1b[K    [FETCH", output)
                     if colored:
                         self.assertIn("\x1b[31m1 failed", output)
                         self.assertIn("\x1b[33m2 warnings\x1b[0m", output)
                         self.assertIn("\x1b[31mNeeds attention: server-mixed, server-offline\x1b[0m", output)
                     else:
-                        self.assertNotIn("\x1b[", output)
+                        self.assertNotIn("\x1b[", output.replace("\x1b[K", ""))
                         self.assertIn("2 warnings", output)
 
     def test_explicit_color_policy_for_piped_demo(self):

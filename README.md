@@ -84,6 +84,13 @@ Summary colors are automatic on a color-capable terminal. `GPA_COLOR=always`
 forces them, `GPA_COLOR=never` disables them, and other values use automatic
 detection. Nonempty `NO_COLOR` takes precedence and disables colors.
 
+On a terminal, `[FETCH]` identifies the repository being pulled immediately,
+then the completed result replaces that line. This works in local and `-a`
+mode, including verbose output. `NO_COLOR` does not disable progress.
+`GPA_PROGRESS=never` disables it; `GPA_PROGRESS=always` forces it (nonterminal
+output then includes newline-delimited progress control records). Other values
+use automatic terminal detection. Redirected output omits progress by default.
+
 ## SSH hosts
 
 Install `gpa` on each remote machine first and make it available on that user's
@@ -149,6 +156,10 @@ skips and warnings. The attention list covers nonzero SSH/remote command exits;
 those hosts may still have successful pulls. Repository counts and warnings
 stay in each host's summary. When every host completes, only the first line
 is printed.
+
+Remote progress requires the updated `gpa` on both ends. Older remote versions
+still show completed results, but cannot send the pending `[FETCH]` status.
+Progress is forwarded without allocating an SSH terminal.
 
 Remote summary colors follow the caller's color choice through `GPA_COLOR`,
 without allocating an SSH terminal. Failed repository counts and the attention

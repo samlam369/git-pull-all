@@ -10,10 +10,12 @@
 #   ${XDG_CONFIG_HOME:-$HOME/.config}/gpa/hosts. Hosts are SSH destinations;
 #   the file is data, not shell code. GPA_COLOR=always/never overrides automatic
 #   terminal color detection; nonempty NO_COLOR takes precedence and disables it.
+#   GPA_PROGRESS=always/never overrides automatic terminal progress detection.
 # Interactions: install.sh links this executable into ~/.local/bin; the user
 #   manages PATH, host configuration, and Git/SSH authentication separately.
 #   Remote hosts need gpa on their noninteractive PATH. Forward -v and the
-#   caller's color choice; each host uses its own HOME and Git configuration.
+#   caller's color and progress choices; each host uses its own HOME and Git
+#   configuration.
 # Effects: git pull --ff-only contacts upstreams and can change Git state and
 #   working trees. Existing hooks, helpers, and autostash settings still apply.
 #   Repeated runs pull again; there is no rollback of earlier successful pulls.
@@ -67,12 +69,19 @@ for arg in "$@"; do
 done
 
 # SSH output is piped for indentation and normally has no terminal. Let the
-# dispatcher pass its color choice without requesting a PTY (which would also
-# enable progress controls). NO_COLOR on either end remains an explicit opt-out.
+# dispatcher pass display choices without requesting a PTY, preserving separate
+# stdout/stderr and noninteractive Git. NO_COLOR disables colors only.
 declare color_red='' color_yellow='' color_reset=''
 if [[ -z "${NO_COLOR:-}" && "${GPA_COLOR:-auto}" != never ]] &&
     { [[ "${GPA_COLOR:-auto}" == always ]] || [[ -t 1 && "${TERM:-dumb}" != dumb ]]; }; then
     color_red=$'\e[31m' color_yellow=$'\e[33m' color_reset=$'\e[0m'
+fi
+
+# Progress is independent of color: NO_COLOR must not hide a slow pull.
+declare progress=0
+if [[ "${GPA_PROGRESS:-auto}" != never ]] &&
+    { [[ "${GPA_PROGRESS:-auto}" == always ]] || [[ -t 1 ]]; }; then
+    progress=1
 fi
 
 if (( all_hosts )); then
@@ -80,8 +89,14 @@ if (( all_hosts )); then
     # Use only fixed command strings, never host data or environment values as
     # shell source. Forward color and verbosity, but not recursive dispatch (-a).
     # Label destinations locally so a failed connection still has a heading.
-    declare remote_command='env GPA_COLOR=never gpa'
-    [[ -n "$color_red" ]] && remote_command='env GPA_COLOR=always gpa'
+    declare remote_command='env GPA_COLOR=never'
+    [[ -n "$color_red" ]] && remote_command='env GPA_COLOR=always'
+    # Insert only literal policy values into the fixed remote command.
+    if (( progress )); then
+        remote_command+=' GPA_PROGRESS=always gpa'
+    else
+        remote_command+=' GPA_PROGRESS=never gpa'
+    fi
     (( verbose )) && remote_command+=' -v'
     declare hosts_file=${GPA_HOSTS_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/gpa/hosts}
     declare -a hosts=()
@@ -105,17 +120,35 @@ if (( all_hosts )); then
         printf 'gpa: no hosts configured in %s\n' "$hosts_file" >&2
         return 2
     fi
-    # Prefix lines as they arrive, retaining verbose detail indentation and
-    # blank separators. read's EOF fallback preserves unterminated diagnostics.
+    # Remote progress uses newline-delimited records so read can forward a
+    # pending FETCH before the pull finishes. Render only that record without
+    # a newline; a subsequent clear-line prefix replaces it with the result.
+    # Older hosts still stream ordinary lines. Preserve EOF diagnostics and
+    # finish an outstanding progress line if SSH disconnects mid-pull.
     __gpa_indent() {
-        local line
+        local line pending=0 clear=$'\r\033[K'
         while IFS= read -r line || [[ -n "$line" ]]; do
-            if [[ -n "$line" ]]; then
-                printf '    %s\n' "$line"
+            if (( progress )) && [[ "$line" == "$clear"* ]]; then
+                line=${line#"$clear"}
+                printf '\r\033[K    %s' "$line"
+                if [[ "$line" == '[FETCH  ] '* ]]; then
+                    pending=1
+                else
+                    printf '\n'
+                    pending=0
+                fi
             else
-                printf '\n'
+                (( pending )) && printf '\n'
+                pending=0
+                if [[ -n "$line" ]]; then
+                    printf '    %s\n' "$line"
+                else
+                    printf '\n'
+                fi
             fi
         done
+        (( pending )) && printf '\n'
+        return 0
     }
 
     # Stream output within host blocks so slow pulls remain visible. Do not
@@ -203,12 +236,18 @@ __gpa_pull() {
         return
     fi
 
-    if [[ -t 1 ]]; then
+    if (( progress )); then
         if [[ -n "$branch" ]]; then
             printf '\r\033[K[%-7s] %s (%s)' "FETCH" "$label" "$branch"
         else
             printf '\r\033[K[%-7s] %s' "FETCH" "$label"
         fi
+    fi
+
+    # A pipe needs a record terminator for the dispatcher's line reader;
+    # direct terminal output keeps the existing in-place display.
+    if (( progress )) && [[ ! -t 1 ]]; then
+        printf '\n'
     fi
 
     # Determine success from Git's status and change from HEAD movement.
@@ -220,7 +259,7 @@ __gpa_pull() {
     pull_output=${pull_output//$'\r'/}
     after=$(git -C "$repo" rev-parse HEAD 2> /dev/null)
 
-    if [[ -t 1 ]]; then
+    if (( progress )); then
         printf '\r\033[K'
     fi
 
