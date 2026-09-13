@@ -404,7 +404,11 @@ def run_live(hosts: list[str], command: str, color: bool) -> tuple[list[HostStat
             self.dirty.add(host.index)
 
         def redraw_dirty(self) -> None:
+            # An idle refresh must not cancel Textual's scroll animation.
+            if not self.dirty:
+                return
             report = self.query_one("#report", VerticalScroll)
+            scroll_before = (report.scroll_y, report.scroll_target_y)
             widgets = [self.query_one(f"#host-{host.index}", HostReport)
                        for host in self.dispatcher.hosts]
             anchor = logical_scroll_anchor(
@@ -440,15 +444,19 @@ def run_live(hosts: list[str], command: str, color: bool) -> tuple[list[HostStat
             if anchor is not None:
                 anchor_id, offset = anchor
                 def restore() -> None:
+                    # User input/animation since the snapshot takes precedence.
+                    # A stale anchor must never rewind a deliberate scroll.
+                    if (report.scroll_y, report.scroll_target_y) != scroll_before:
+                        return
+                    if report.scroll_y != report.scroll_target_y:
+                        return
                     tops = {widget.id: widget.virtual_region.y for widget in widgets}
-                    # This compensates for earlier host sections growing, but
-                    # local UAC found that unconditional refresh-time restores
-                    # can override deliberate keyboard or mouse scrolling. A
-                    # follow-up must distinguish user movement from layout drift.
-                    report.scroll_to(
-                        y=restore_scroll_y((anchor_id, offset), tops, report.scroll_y),
-                        animate=False,
-                    )
+                    restored = restore_scroll_y((anchor_id, offset), tops, report.scroll_y)
+                    # scroll_to stops an active animation even when its value
+                    # is unchanged. Compensate only for actual layout movement,
+                    # immediately after layout rather than another refresh later.
+                    if restored != report.scroll_y:
+                        report.scroll_to(y=restored, animate=False, immediate=True)
                 self.call_after_refresh(restore)
 
         async def action_interrupt(self) -> None:

@@ -309,9 +309,9 @@ of these dependencies.
   `GPA1` protocol tag. Malformed records remain inert, readable text. A remote
   that ignores `GPA_EVENT_STREAM=1` is handled as an older plain-text peer.
 - The scroll anchor records the top visible host plus its within-section offset
-  before a refresh, then restores that logical position after layout. Local UAC
-  found that this restoration currently prevents reliable interactive scrolling
-  while updates continue; this is a known gap rather than accepted behavior.
+  before a content refresh. After layout it compensates only for an actual
+  position change, and only if the reader is stationary and no newer scroll
+  input has superseded the snapshot. Idle ticks do not restore scroll position.
 - The first interface uses `starting`, `running`, `completed`, `failed`, and
   `interrupted` lifecycle wording. Refreshes are coalesced on a 100 ms timer.
 - Startup, renderer, and dependency failures return nonzero. SIGINT terminates
@@ -342,12 +342,16 @@ maintainer's environment.
    diagnosis. The user confirmed the color fix succeeds on the affected
    terminal. This item is closed; retain light/dark palette, transparency, and
    `NO_COLOR` checks for future renderer changes.
-2. **Scrolling during live updates:** keyboard and mouse scrolling cannot
-   reliably reach content outside the visible area while refreshes continue.
-   The current logical-anchor restoration is a likely interaction point. A fix
-   must distinguish deliberate user scrolling from layout compensation, retain
-   the reader's host-relative position when earlier sections grow, and preserve
-   the complete final scrollback report.
+2. **Scrolling during live updates — fix implemented, visual UAC pending:**
+   the unconditional 100 ms anchor restoration called `scroll_to` even with
+   no layout change, cancelling Textual's navigation animations. A headless
+   regression reproduced a Page Down stopping after only a few rows. The fix
+   skips idle refreshes and unchanged positions, compensates immediately after
+   layout, and gives newer user input or active animation precedence over a
+   stale anchor. Tests exercise keyboard and mouse navigation during repeated
+   refreshes, earlier-host growth, resize, and input arriving between snapshot
+   and restoration. Final scrollback retains its PTY coverage. Confirm keyboard
+   and mouse behavior on the affected terminal before closing this item.
 3. **Installer platform matrix:** automatic dependency provisioning is verified
    in an isolated Debian 13 environment. Ubuntu and Termux remain unverified.
    Their package names, Python/venv behavior, privilege model, network effects,
@@ -387,9 +391,9 @@ maintainer's environment.
    EOF without newline, blank lines, long lines, and high-volume stderr work.
 5. Reports several screens long retain all content. Scrolling up stays anchored
    while earlier hosts add output; resizing keeps all sections readable.
-   **Open:** retained content and resize have automated coverage, but local UAC
-   found live interactive scrolling unreliable, so this criterion is not yet
-   fully met.
+   **Visual UAC pending:** the scrolling fix now has real Textual event-loop
+   coverage for navigation and anchoring; verify the user-reported terminal
+   interaction before marking this criterion fully accepted.
 6. A failed connection and a remote pull failure do not stop a slow successful
    host. The final footer follows all drained output and has correct status.
 7. Terminal completion leaves the full grouped report in normal scrollback;

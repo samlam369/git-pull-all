@@ -1,6 +1,7 @@
 """Offline tests using temporary homes, Git fixtures, and mock SSH only."""
 
 import importlib.util
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "bin/gpa-hosts.py"
@@ -396,6 +398,108 @@ class GpaTests(unittest.TestCase):
         self.assertRegex(live, r"\x1b\[[0-9;]*49[;m]")
         for sgr in re.findall(r"\x1b\[([0-9;]*)m", live):
             self.assertNotRegex(sgr, r"(?:^|;)(?:38|48);(?:2|5);")
+
+    def test_live_scroll_navigation_and_growth_keep_reader_position(self):
+        try:
+            from textual.app import App
+            from textual import events
+        except ImportError:
+            self.skipTest("Textual is not installed")
+        helper = load_helper()
+        captured = []
+        # Capture the real app, then run its renderer/event loop headlessly.
+        # Only the SSH worker is replaced; navigation and layout remain real.
+        with patch.object(App, "run", lambda app, **kwargs: captured.append(app)):
+            helper.run_live(["early", "later"], "unused", False)
+        app = captured[0]
+
+        async def idle_worker(dispatcher):
+            await asyncio.Event().wait()
+
+        async def exercise():
+            with patch.object(helper.Dispatcher, "run", idle_worker):
+                async with app.run_test(size=(80, 18)) as pilot:
+                    for host in app.dispatcher.hosts:
+                        for n in range(70):
+                            app.receive(host, host.ingest("stdout", f"row-{n}"))
+                    await pilot.pause(.25)
+                    report = app.query_one("#report")
+                    self.assertIs(app.focused, report)
+                    # Keep real redraws active throughout keyboard and mouse
+                    # input, without changing report height during navigation.
+                    updates = 0
+                    def keep_updating():
+                        nonlocal updates
+                        updates += 1
+                        host = app.dispatcher.hosts[0]
+                        host.records[0].text = f"tick-{updates:06d}"
+                        app.receive(host, host.records[0])
+                    ticker = app.set_interval(.05, keep_updating)
+                    await pilot.press("pagedown")
+                    await pilot.pause(.4)
+                    self.assertGreater(report.scroll_y, 5)
+                    await pilot.press("end")
+                    await pilot.pause(.4)
+                    self.assertAlmostEqual(report.scroll_y, report.max_scroll_y)
+                    await pilot.press("pageup")
+                    await pilot.pause(.4)
+                    self.assertLess(report.scroll_y, report.max_scroll_y - 5)
+
+                    # Hold a row in the second host while the earlier host grows.
+                    later = app.query_one("#host-1")
+                    report.scroll_to(y=later.virtual_region.y + 10,
+                                     animate=False, immediate=True)
+                    await pilot.pause(.2)
+                    offset = report.scroll_y - later.virtual_region.y
+                    for n in range(5):
+                        host = app.dispatcher.hosts[0]
+                        app.receive(host, host.ingest("stdout", f"new-{n}"))
+                        await pilot.pause(.15)
+                        self.assertAlmostEqual(
+                            report.scroll_y - later.virtual_region.y, offset)
+
+                    before = report.scroll_y
+                    report.post_message(events.MouseScrollDown(
+                        report, 2, 2, 0, 0, 0, False, False, False))
+                    await pilot.pause(.4)
+                    self.assertGreater(report.scroll_y, before)
+                    before = report.scroll_y
+                    report.post_message(events.MouseScrollUp(
+                        report, 2, 2, 0, 0, 0, False, False, False))
+                    await pilot.pause(.4)
+                    self.assertLess(report.scroll_y, before)
+                    before = report.scroll_y
+                    await pilot.press("down")
+                    await pilot.pause(.3)
+                    self.assertAlmostEqual(report.scroll_y, before + 1)
+                    await pilot.press("up")
+                    await pilot.pause(.3)
+                    self.assertAlmostEqual(report.scroll_y, before)
+                    await pilot.resize_terminal(60, 12)
+                    await pilot.pause(.2)
+                    self.assertAlmostEqual(report.scroll_y, before)
+
+                    # Simulate input arriving after the anchor snapshot but
+                    # before its post-layout callback. The newer input wins.
+                    ticker.stop()
+                    await pilot.pause(.2)
+                    callbacks = []
+                    host = app.dispatcher.hosts[0]
+                    app.receive(host, host.ingest("stdout", "another-row"))
+                    with patch.object(app, "call_after_refresh",
+                                      lambda callback: callbacks.append(callback)):
+                        app.redraw_dirty()
+                    report.scroll_to(y=before + 3, animate=False, immediate=True)
+                    await pilot.pause(.2)
+                    self.assertTrue(callbacks)
+                    for callback in callbacks:
+                        callback()
+                    self.assertAlmostEqual(report.scroll_y, before + 3)
+                    await pilot.press("home")
+                    await pilot.pause(.4)
+                    self.assertEqual(report.scroll_y, 0)
+                    app.runner.cancel()
+        asyncio.run(exercise())
 
     def test_live_terminal_palette_with_and_without_color(self):
         try:

@@ -156,10 +156,12 @@ view appends the current host status, for example
 
 The live interface uses the terminal's default foreground/background and ANSI
 palette, including the scrollbar, so light/dark colors and transparency remain
-terminal-controlled. Scrolling beyond the visible
-area is still not reliable while refreshes are active; the complete report is
-available in normal terminal scrollback after the run. Follow-up UAC work is
-tracked in `docs/parallel-hosts.md`.
+terminal-controlled. Page Up/Page Down, arrow keys, Home/End, and the mouse
+wheel scroll the live report while hosts run. Earlier host sections growing
+preserve a stationary reader's host-relative position; active user scrolling
+takes precedence over layout compensation. The complete report remains in
+normal terminal scrollback after the run. The scrolling fix has automated
+coverage and awaits visual UAC, tracked in `docs/parallel-hosts.md`.
 
 Each host has a separate lifecycle (`starting`, `running`, `completed`,
 `failed`, or `interrupted`). A failed repository does not finish its host; the
