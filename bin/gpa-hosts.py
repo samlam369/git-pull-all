@@ -6,6 +6,7 @@ validated the complete hosts file.  It starts one noninteractive SSH process
 per list entry, drains both pipes independently, and retains every record in
 configuration order.  A Textual interface is used only when all three standard
 streams are terminals; redirects receive a live, host-attributed text stream.
+SSH stdin is disconnected: only the renderer may consume terminal input.
 
 Inputs are host arguments plus ``--verbose`` and the caller's colour/progress
 policies.  SSH configuration owns authentication, verification, and timeouts;
@@ -180,6 +181,10 @@ class Dispatcher:
             host.process = await asyncio.create_subprocess_exec(
                 "ssh", "-q", "-o", "BatchMode=yes", host.destination,
                 self.remote_command,
+                # BatchMode disables prompts, not stdin forwarding. Inheriting
+                # the terminal lets SSH steal keys and mouse escape sequences
+                # from Textual; remote gpa has no interactive input contract.
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
             )

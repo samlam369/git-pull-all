@@ -215,7 +215,9 @@ honor the forwarded color choice.
 
 SSH uses normal host verification but enables `BatchMode=yes`: authentication
 or verification that needs a prompt fails that host instead of blocking the
-report. There is no built-in timeout or retry. Configure timeout policy and
+report. SSH stdin is connected to `/dev/null` so it cannot consume live-view
+keyboard or mouse input; remote commands receive EOF rather than terminal
+input. There is no built-in timeout or retry. Configure timeout policy and
 prepare keys and known hosts through ordinary SSH configuration.
 
 Ctrl+C marks unfinished hosts interrupted, retains received output, terminates

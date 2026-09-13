@@ -113,6 +113,20 @@ class GpaTests(unittest.TestCase):
                         expected += " -v"
                     self.assertEqual(call[4], expected)
 
+    def test_ssh_workers_cannot_consume_dispatcher_input(self):
+        self.hosts("reader-one\nreader-two\n")
+        self.write_ssh(
+            "data = sys.stdin.buffer.read()\n"
+            "print('stdin-eof' if not data else 'stdin-leaked', flush=True)\n")
+        result = subprocess.run(
+            ["bash", str(ROOT / "bin/gpa"), "-a"], env=self.env,
+            input="reserved-for-the-dispatcher", text=True,
+            capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("stdin-leaked", result.stdout)
+        for host in ("reader-one", "reader-two"):
+            self.assertIn(f"[{host}] stdin-eof", result.stdout)
+
     def test_all_hosts_cross_launch_barrier_before_finishing(self):
         destinations = ["alpha", "beta", "gamma", "delta"]
         self.hosts("\n".join(destinations) + "\n")
@@ -398,6 +412,80 @@ class GpaTests(unittest.TestCase):
         self.assertRegex(live, r"\x1b\[[0-9;]*49[;m]")
         for sgr in re.findall(r"\x1b\[([0-9;]*)m", live):
             self.assertNotRegex(sgr, r"(?:^|;)(?:38|48);(?:2|5);")
+
+    def test_live_pty_navigation_with_stdin_reading_ssh(self):
+        try:
+            import textual  # noqa: F401
+        except ImportError:
+            self.skipTest("Textual is not installed")
+        import fcntl
+        import struct
+        import termios
+        self.hosts("input-reader\n")
+        release = self.base / "release"
+        self.env.update(RELEASE_FILE=str(release), TERM="xterm-256color")
+        # Real SSH forwards stdin even with BatchMode. Exercise that behavior,
+        # which output-only mocks and headless renderer tests cannot detect.
+        self.write_ssh(
+            "if sys.stdin.isatty():\n"
+            " print('ERROR-shared-terminal-stdin', flush=True); sys.exit(91)\n"
+            "assert sys.stdin.buffer.read() == b''\n"
+            "print('\\n'.join('row-%03d' % n for n in range(100)), flush=True)\n"
+            "while not pathlib.Path(os.environ['RELEASE_FILE']).exists(): time.sleep(.01)\n")
+        master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 18, 80, 0, 0))
+        process = subprocess.Popen(["bash", str(ROOT / "bin/gpa"), "-a"],
+                                   env=self.env, stdin=slave, stdout=slave,
+                                   stderr=slave, start_new_session=True)
+        os.close(slave)
+        output = bytearray()
+
+        def wait_for(marker, since=0):
+            deadline = time.monotonic() + 5
+            while marker not in output[since:]:
+                self.assertNotIn(b"ERROR-shared-terminal-stdin", output)
+                self.assertLess(time.monotonic(), deadline,
+                                bytes(output[-2000:]).decode(errors="replace"))
+                if select.select([master], [], [], .05)[0]:
+                    try:
+                        chunk = os.read(master, 65536)
+                    except OSError:
+                        self.fail("live view exited before rendering " + repr(marker))
+                    self.assertTrue(chunk)
+                    output.extend(chunk)
+
+        try:
+            wait_for(b"row-014")
+            self.assertNotIn(b"row-025", output)
+            # Read real rendered rows after actual terminal escape sequences;
+            # final scrollback cannot satisfy these checks while SSH is held.
+            start = len(output)
+            os.write(master, b"\x1b[6~")
+            wait_for(b"row-025", start)
+            start = len(output)
+            os.write(master, b"\x1b[F")
+            wait_for(b"row-099", start)
+            start = len(output)
+            os.write(master, b"\x1b[H")
+            wait_for(b"row-000", start)
+            start = len(output)
+            # SGR mouse wheel down over the report text, not its container API.
+            os.write(master, b"\x1b[<65;10;5M" * 4)
+            wait_for(b"row-020", start)
+            self.assertIsNone(process.poll())
+            release.touch()
+            wait_for(b"gpa hosts: 1/1 completed")
+            self.assertEqual(process.wait(timeout=5), 0)
+        finally:
+            release.touch()
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGINT)
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=5)
+            os.close(master)
 
     def test_live_scroll_navigation_and_growth_keep_reader_position(self):
         try:

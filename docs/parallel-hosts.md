@@ -228,6 +228,9 @@ on an ordinary terminal; separate streams do not promise a global write order.
   requiring a prompt fails that host with actionable diagnostics; users prepare
   authentication and known hosts through ordinary SSH beforehand. Do not weaken
   host verification. This intentionally changes the current prompt behavior.
+- Connect each SSH child's stdin to `/dev/null`. BatchMode does not disable
+  stdin forwarding; the renderer must be the sole reader of terminal input.
+  Remote commands receive EOF and plain mode must not consume caller input.
 - Inherit timeout policy from SSH configuration; do not add automatic retries.
 - Continue other hosts after SSH or remote command failure.
 - Preserve exit 0 for all-success, 1 for any host failure, and 2 for invalid
@@ -348,7 +351,16 @@ maintainer's environment.
    regression reproduced a Page Down stopping after only a few rows. The fix
    skips idle refreshes and unchanged positions, compensates immediately after
    layout, and gives newer user input or active animation precedence over a
-   stale anchor. Tests exercise keyboard and mouse navigation during repeated
+   stale anchor. The user reported no visible improvement after that fix.
+   Follow-up investigation reproduced a separate input-ownership bug: SSH
+   inherited the terminal stdin and could consume keys and mouse sequences
+   intended for Textual. BatchMode disables authentication prompts, not stdin
+   forwarding. Each SSH child now receives `/dev/null` as stdin. Earlier mocks
+   only emitted output, and the headless test replaced SSH entirely, so neither
+   exposed this issue. New tests use stdin-reading SSH fixtures: pipe input
+   must never reach a child, and a real PTY must show previously off-screen rows
+   after keyboard and SGR mouse-wheel input while the child remains running.
+   Tests also exercise keyboard and mouse navigation during repeated
    refreshes, earlier-host growth, resize, and input arriving between snapshot
    and restoration. Final scrollback retains its PTY coverage. Confirm keyboard
    and mouse behavior on the affected terminal before closing this item.
