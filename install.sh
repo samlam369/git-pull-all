@@ -27,6 +27,21 @@
 # user paths. A partial dependency install is not rolled back automatically.
 set -euo pipefail
 
+# Preserve the command's diagnostics and status without guessing whether a
+# failure came from privileges, networking, package locks, or package state.
+run_package_setup() {
+    local status
+    if "$@"; then
+        return 0
+    else
+        status=$?
+        printf 'gpa: dependency setup failed while running:' >&2
+        printf ' %q' "$@" >&2
+        printf '\ngpa: see the command output above for details; installation stopped.\n' >&2
+        return "$status"
+    fi
+}
+
 # Validate every option before creating directories, installing packages, or
 # changing links. The options are independent and may appear in either order.
 migrate=0 install_dependencies=1
@@ -91,7 +106,7 @@ if (( install_dependencies )); then
                 exit 1
             fi
             printf 'Installing Termux dependencies with pkg: %s\n' "${packages[*]}"
-            "$PREFIX/bin/pkg" install -y "${packages[@]}"
+            run_package_setup "$PREFIX/bin/pkg" install -y "${packages[@]}"
         else
             if ! command -v apt-get > /dev/null; then
                 printf 'gpa: apt-get is required to install: %s\n' "${packages[*]}" >&2
@@ -99,14 +114,20 @@ if (( install_dependencies )); then
             fi
             if (( EUID != 0 )); then
                 if ! command -v sudo > /dev/null; then
-                    printf 'gpa: sudo is required to install: %s\n' "${packages[*]}" >&2
+                    printf 'gpa: missing system packages: %s\n' "${packages[*]}" >&2
+                    printf 'gpa: cannot install automatically: running as non-root and sudo was not found.\n' >&2
+                    # Offer commands without choosing a privilege mechanism or
+                    # moving the user-level installation into root's HOME.
+                    printf 'gpa: package setup commands (require root privileges):\n' >&2
+                    printf '  apt-get update\n  apt-get install -y -- %s\n' "${packages[*]}" >&2
+                    printf 'gpa: after resolving dependencies, rerun ./install.sh as this user.\n' >&2
                     exit 1
                 fi
                 privilege=(sudo)
             fi
             printf 'Installing system dependencies with apt: %s\n' "${packages[*]}"
-            "${privilege[@]}" apt-get update
-            "${privilege[@]}" apt-get install -y -- "${packages[@]}"
+            run_package_setup "${privilege[@]}" apt-get update
+            run_package_setup "${privilege[@]}" apt-get install -y -- "${packages[@]}"
         fi
     fi
 

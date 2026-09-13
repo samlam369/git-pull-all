@@ -813,7 +813,11 @@ class GpaTests(unittest.TestCase):
     def test_installer_stops_after_package_failure(self):
         self.check_installer_platform("debian", package_failure=True)
 
-    def check_installer_platform(self, platform, package_failure=False):
+    def test_installer_explains_missing_sudo_without_changing_installation(self):
+        self.check_installer_platform("debian", missing_sudo=True)
+
+    def check_installer_platform(self, platform, package_failure=False,
+                                 missing_sudo=False):
         # Supply a fixture OS identity without introducing a production
         # environment override for a system-owned configuration file.
         os_release = self.base / "os-release"
@@ -821,6 +825,12 @@ class GpaTests(unittest.TestCase):
         installer = self.base / "install.sh"
         installer.write_text((ROOT / "install.sh").read_text().replace(
             "/etc/os-release", str(os_release)))
+        if missing_sudo:
+            # Simulate privilege discovery only in the fixture, independent of
+            # the test runner's UID and installed sudo. No real package calls.
+            installer.write_text(installer.read_text().replace(
+                "(( EUID != 0 ))", "(( 1 ))").replace(
+                "command -v sudo > /dev/null", "false"))
         self.env.pop("PREFIX", None)
         data_home = self.base / "data"
         install_log = self.base / "python-install.log"
@@ -835,7 +845,7 @@ class GpaTests(unittest.TestCase):
             "[[ \"${1:-}\" != install ]] || : > \"$APT_MARKER\"\n")
         apt.chmod(0o755)
         if package_failure:
-            apt.write_text("#!/usr/bin/env bash\nexit 42\n")
+            apt.write_text("#!/usr/bin/env bash\necho 'fixture package error' >&2\nexit 42\n")
         if platform == "termux":
             prefix = self.base / "termux"
             (prefix / "bin").mkdir(parents=True)
@@ -864,12 +874,26 @@ class GpaTests(unittest.TestCase):
             " managed.chmod(0o755)\n"
             "sys.exit(0)\n")
         python.chmod(0o755)
-        if platform == "unknown" or package_failure:
+        if platform == "unknown" or package_failure or missing_sudo:
             result = subprocess.run(["bash", str(installer)], env=self.env,
                                     text=True, capture_output=True)
             self.assertNotEqual(result.returncode, 0)
             if platform == "unknown":
                 self.assertIn("Debian, Ubuntu, and Termux only", result.stderr)
+            if package_failure:
+                self.assertEqual(result.returncode, 42)
+                self.assertIn("fixture package error", result.stderr)
+                self.assertIn("dependency setup failed while running:", result.stderr)
+                self.assertIn("apt-get update", result.stderr)
+                self.assertIn("installation stopped", result.stderr)
+            if missing_sudo:
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("missing system packages: python3-venv", result.stderr)
+                self.assertIn("running as non-root and sudo was not found", result.stderr)
+                self.assertIn("require root privileges", result.stderr)
+                self.assertIn("  apt-get update\n  apt-get install -y -- python3-venv\n", result.stderr)
+                self.assertIn("rerun ./install.sh as this user", result.stderr)
+                self.assertFalse(apt_log.exists())
             self.assertFalse(apt_marker.exists())
             self.assertFalse((data_home / "gpa/venv").exists())
             self.assertFalse((self.home / ".local/bin/gpa").exists())
