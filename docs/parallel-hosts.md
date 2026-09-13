@@ -1,6 +1,7 @@
 # PRD: concurrent hosts with a live grouped report
 
-Status: implemented on `feat/parallel-pull`; pending final visual UAC.
+Status: basically usable on `feat/parallel-pull`; follow-up UAC work is tracked
+below.
 Branch: `feat/parallel-pull`.
 
 This PRD replaces the earlier proposal for a mixed, host-prefixed terminal
@@ -295,14 +296,16 @@ of these dependencies.
 - `bin/gpa-hosts.py` lives beside the Bash executable; resolving the installed
   `gpa` symlink locates the helper without another installed link. Remote mode
   supports Python 3.10+ and pins Textual 8.2.8 in an installer-managed venv.
-  On apt-based Linux, installation provisions missing system packages; other
-  platforms receive explicit guidance rather than guessed package commands.
+  Automatic package provisioning currently uses Debian package names whenever
+  `apt-get` exists and has been verified only on Debian 13. Ubuntu and Termux
+  behavior remains follow-up work rather than a portability claim.
 - Supporting remotes emit JSON records after an ASCII record-separator and a
   `GPA1` protocol tag. Malformed records remain inert, readable text. A remote
   that ignores `GPA_EVENT_STREAM=1` is handled as an older plain-text peer.
 - The scroll anchor records the top visible host plus its within-section offset
-  before a refresh, then restores that logical position after layout. Textual
-  owns wrapping, resizing, keyboard navigation, and mouse-wheel input.
+  before a refresh, then restores that logical position after layout. Local UAC
+  found that this restoration currently prevents reliable interactive scrolling
+  while updates continue; this is a known gap rather than accepted behavior.
 - The first interface uses `starting`, `running`, `completed`, `failed`, and
   `interrupted` lifecycle wording. Refreshes are coalesced on a 100 ms timer.
 - Startup, renderer, and dependency failures return nonzero. SIGINT terminates
@@ -312,6 +315,51 @@ The user will assess scrolling experience and visual density at final UAC.
 Implement and test the specified behavior first; do not build multiple complete
 versions or add a prototype approval gate. Internal simulations remain useful
 for engineering validation.
+
+## Readiness and follow-up workflow
+
+Local UAC has established that the concurrent host feature is basically usable,
+but it is not visually complete. The following items are the canonical backlog
+for this branch; they must not depend on conversation history or an individual
+maintainer's environment.
+
+### Known gaps
+
+1. **Terminal color integration:** the live Textual screen currently uses its
+   default dark palette/background rather than following the terminal color
+   scheme. A follow-up should use terminal-aware or transparent styling and
+   verify light and dark terminals plus `NO_COLOR` behavior.
+2. **Scrolling during live updates:** keyboard and mouse scrolling cannot
+   reliably reach content outside the visible area while refreshes continue.
+   The current logical-anchor restoration is a likely interaction point. A fix
+   must distinguish deliberate user scrolling from layout compensation, retain
+   the reader's host-relative position when earlier sections grow, and preserve
+   the complete final scrollback report.
+3. **Installer platform matrix:** automatic dependency provisioning is verified
+   in an isolated Debian 13 environment. Ubuntu and Termux remain unverified.
+   Their package names, Python/venv behavior, privilege model, network effects,
+   and repeat-run behavior must be observed before claiming support. In
+   particular, the presence of `apt-get` must not be treated as proof that
+   Debian package names or `sudo` are appropriate on Termux.
+
+### Follow-up checklist
+
+- Reproduce UI issues with `examples/demo-output.sh` and isolated fixtures;
+  never use live repository updates for visual testing.
+- For each installation target, record the OS/release, available package
+  manager and commands, required package names, Python version, venv behavior,
+  privilege requirements, first-run effects, and idempotent rerun result.
+- Run installation trials from a temporary checkout and isolated `HOME` /
+  `XDG_DATA_HOME`. Use real SSH only when separately authorized, and never run
+  `gpa` against user repositories as part of validation.
+- Update `install.sh`, its frontmatter and diagnostics, regression tests,
+  `README.md`, and this decision record together when adding platform support.
+- Run the repository checks in this document and the Textual-enabled UI suite.
+  Exercise overflow, resize, keyboard and mouse scrolling, active refreshes,
+  light/dark terminal colors, and the retained final report.
+- Return terminal density and scrolling behavior for final user acceptance only
+  after the known gaps above are resolved; no intermediate prototype approval
+  is required.
 
 ## Acceptance criteria
 
@@ -326,6 +374,9 @@ for engineering validation.
    EOF without newline, blank lines, long lines, and high-volume stderr work.
 5. Reports several screens long retain all content. Scrolling up stays anchored
    while earlier hosts add output; resizing keeps all sections readable.
+   **Open:** retained content and resize have automated coverage, but local UAC
+   found live interactive scrolling unreliable, so this criterion is not yet
+   fully met.
 6. A failed connection and a remote pull failure do not stop a slow successful
    host. The final footer follows all drained output and has correct status.
 7. Terminal completion leaves the full grouped report in normal scrollback;
@@ -369,4 +420,6 @@ git diff --check
 
 Add meaningful concurrency, process-cleanup, plain-output, and terminal UI
 coverage during implementation. Implementation and test work does not authorize
-live SSH tests, deployment, or publishing.
+live SSH tests, deployment, or publishing. Record handoff state in the readiness
+section above and in commit messages; do not rely on chat context for unfinished
+acceptance work.

@@ -349,6 +349,9 @@ def run_live(hosts: list[str], command: str, color: bool) -> tuple[list[HostStat
         pass
 
     class ReportApp(App[None]):
+        # Textual's default palette currently gives the live screen a dark
+        # background. Terminal-aware/transparent colors remain explicit UAC
+        # follow-up work in docs/parallel-hosts.md.
         CSS = """
         Screen { layout: vertical; }
         #status { dock: top; height: 1; padding: 0 1; text-style: bold; }
@@ -431,6 +434,10 @@ def run_live(hosts: list[str], command: str, color: bool) -> tuple[list[HostStat
                 anchor_id, offset = anchor
                 def restore() -> None:
                     tops = {widget.id: widget.virtual_region.y for widget in widgets}
+                    # This compensates for earlier host sections growing, but
+                    # local UAC found that unconditional refresh-time restores
+                    # can override deliberate keyboard or mouse scrolling. A
+                    # follow-up must distinguish user movement from layout drift.
                     report.scroll_to(
                         y=restore_scroll_y((anchor_id, offset), tops, report.scroll_y),
                         animate=False,

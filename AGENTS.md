@@ -118,11 +118,14 @@ the effects below rather than treating the existing mechanism as mandatory.
 - Do not apply `set -e` mechanically to the main command: failure aggregation
   and arithmetic statuses need deliberate handling. The installer uses
   strict mode because its filesystem operations should stop on failure.
-- The installer supports repeat runs, a narrowly scoped migration, apt-based
-  dependency provisioning, and a pinned Textual release in a managed venv.
-  `--no-dependencies` keeps externally provisioned and test environments free
-  of package changes. Protect unrelated user files, report network/system
-  effects before running them, and do not guess commands for other platforms.
+- The installer supports repeat runs, a narrowly scoped migration, Debian
+  13-verified apt dependency provisioning, and a pinned Textual release in a
+  managed venv. Ubuntu and Termux remain validation targets recorded in
+  `docs/parallel-hosts.md`; do not claim support based only on the presence of
+  `apt-get`. `--no-dependencies` keeps externally provisioned and test
+  environments free of package changes. Protect unrelated user files, report
+  network/system effects before running them, and do not guess commands for
+  other platforms.
 - Keep dependencies and platform claims explicit. Do not claim portability
   beyond what has been checked or silently add setup/network side effects.
 
@@ -153,6 +156,10 @@ fixtures, including relevant failure paths. Comment-only edits do not need
 new tests. Review the diff to ensure documentation matches actual behavior.
 Report what changed, validation results, and whether changes were committed
 or pushed. Identify any unverified behavior without overstating guarantees.
+For the concurrent-host feature, keep readiness, known UAC gaps, and the
+platform test matrix in `docs/parallel-hosts.md`. Environment validation uses
+temporary homes/checkouts and may use real SSH only with explicit authorization;
+it must never update user repositories.
 
 ## Git conventions
 

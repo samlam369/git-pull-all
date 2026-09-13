@@ -42,22 +42,30 @@ currently fixed; there is no repository exclusion option or dry-run mode.
 ## Install
 
 The one-step installer checks Bash, Git, sed, SSH, GNU-compatible `realpath`,
-Python 3.10+, and Python venv support. On Debian and Ubuntu systems with
-`apt-get`, it installs missing system packages, using `sudo` when required.
-This can prompt for privilege escalation, uses the package network, and is not
-rolled back if a later step fails.
+Python 3.10+, and Python venv support. Its automatic system-package path is
+currently verified on Debian 13: when `apt-get` is available, it installs
+missing Debian package names, using `sudo` when required. This can prompt for
+privilege escalation, uses the package network, and is not rolled back if a
+later step fails.
 
 It then creates `${XDG_DATA_HOME:-$HOME/.local/share}/gpa/venv` and installs the
 supported Textual 8.2.8 release there. The environment is owned by this tool;
 it avoids modifying system Python or relying on an activated shell environment.
 Reruns reuse it when the requested version is already installed.
 
-Other Linux distributions must provision missing system packages with their
-own package manager before rerunning the installer. macOS/BSD setup is not
-verified and may need GNU coreutils. `--no-dependencies` skips all dependency
-checks, package operations, and managed-venv setup for externally provisioned
-machines and CI. Local-only execution itself remains independent of Python and
-Textual. Remote hosts need Bash, Git, sed, and `env` to receive pulls.
+Ubuntu and Termux package setup still need environment-specific validation;
+having an `apt-get` command alone does not guarantee Debian package names or
+privilege handling are correct there. Until those paths are completed, install
+the listed commands and Python venv/ensurepip support using the platform's
+package manager before running the normal installer; it can then create the
+managed Textual environment without invoking `apt-get`. Alternatively, fully
+provision Python and Textual 8.2.8 externally and use
+`install.sh --no-dependencies`. Other Linux distributions must use one of these
+paths. macOS/BSD setup is not verified and may need GNU coreutils. The flag
+skips all dependency checks, package operations, and managed-venv setup, so the
+caller owns those dependencies. Local-only execution itself remains independent
+of Python and Textual. Remote hosts need Bash, Git, sed, and `env` to receive
+pulls.
 
 ```sh
 mkdir -p ~/repos
@@ -136,11 +144,17 @@ GPA_HOSTS_FILE=/path/to/hosts gpa -a
 
 Remote mode validates the complete file, then launches every host concurrently
 with noninteractive SSH. On a terminal, Textual keeps an overall status line
-visible above one vertically scrollable report. Host sections stay in file
-order while they grow live, and Page Up/Page Down, arrow keys, Home/End, and the
-mouse wheel scroll the complete report. Results do not reorder when a host
-finishes. When all output is drained, the interface closes automatically and
-prints the complete grouped report into normal terminal scrollback.
+visible above one report. Host sections stay in file order while they grow
+live, and results do not reorder when a host finishes. When all output is
+drained, the interface closes automatically and prints the complete grouped
+report into normal terminal scrollback.
+
+The first usable live interface has two known visual limitations. It currently
+uses Textual's dark palette instead of following the terminal's color scheme,
+and scrolling beyond the visible area is not reliable while refreshes are
+active. The complete report remains available in normal terminal scrollback
+after the run. Terminal-aware styling and live keyboard/mouse scrolling are
+tracked as follow-up UAC work in `docs/parallel-hosts.md`.
 
 Each host has a separate lifecycle (`starting`, `running`, `completed`,
 `failed`, or `interrupted`). A failed repository does not finish its host; the

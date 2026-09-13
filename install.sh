@@ -7,8 +7,9 @@
 # Usage: ./install.sh [--migrate-dotfiles] [--no-dependencies]
 # Inputs: HOME and optional XDG_DATA_HOME choose installation paths. By default
 # the installer checks Bash, Git, sed, SSH, realpath, Python 3.10+, and venv.
-# On apt-based Linux it installs missing system packages with apt-get (through
-# sudo when not root), then installs Textual 8.2.8 in
+# Automatic package provisioning is currently verified on Debian 13. When
+# apt-get exists it uses Debian package names (through sudo when not root), then
+# installs Textual 8.2.8 in
 # ${XDG_DATA_HOME:-$HOME/.local/share}/gpa/venv. --no-dependencies skips these
 # checks and changes for externally provisioned systems and isolated tests.
 #
@@ -57,6 +58,10 @@ if (( install_dependencies )); then
     fi
 
     if (( ${#packages[@]} )); then
+        # This apt path is verified on Debian 13 only. Ubuntu and Termux remain
+        # explicit test-matrix work: apt-get's presence alone does not prove
+        # these Debian package names or sudo-based privilege handling fit the
+        # environment. See docs/parallel-hosts.md before broadening claims.
         if ! command -v apt-get > /dev/null; then
             printf 'gpa: missing system dependencies: %s\n' "${packages[*]}" >&2
             printf 'gpa: install them with your OS package manager, then rerun install.sh\n' >&2
