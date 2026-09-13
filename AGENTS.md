@@ -125,8 +125,23 @@ the effects below rather than treating the existing mechanism as mandatory.
 
 ## Privacy and scope
 
-- Keep actual hostnames, addresses, credentials, personal configuration, and
-  runtime output out of tracked files. Use fictional examples and fixtures.
+This is a public repository. Treat all tracked content and commit messages
+as publicly visible, including documentation, scripts, comments, examples,
+tests, and generated files.
+
+- Keep personal or sensitive information out of tracked content and commit
+  messages (subjects, bodies, and trailers). This includes personal names
+  and contact details, actual hostnames and addresses, credentials, personal
+  filesystem paths, private repository references, personal configuration,
+  and runtime output containing such details. Use fictional examples,
+  fixtures, and generic placeholders instead.
+- When asked to commit, briefly remind the user that this repository is
+  public and offer to help review and sanitize the staged diff and proposed
+  commit message. Perform that review before committing; if anything needs
+  attention, describe the category and location without repeating sensitive
+  values, and suggest concrete redactions or fictional replacements.
+  This reminder does not require an extra approval step for an already
+  authorized commit; preserve unrelated user changes when sanitizing.
 - Public documentation must stand on its own. Do not name or link private
   repositories or describe maintainer-specific migration history there.
 - Never use live SSH or update user repositories to run tests. Use isolated
