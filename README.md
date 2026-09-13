@@ -140,6 +140,11 @@ be removed separately if no longer needed.
 
 ## Development
 
+The defaults reflect my current workflow and can be revisited as needs change.
+Comments record intent, assumptions, and useful tradeoffs so future changes can
+be made with context; they do not imply every existing choice is essential or
+permanent. When changing behavior, update its documentation and tests too.
+
 ```sh
 bash -n bin/gpa install.sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
