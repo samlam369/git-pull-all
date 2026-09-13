@@ -1,4 +1,4 @@
-# One SSH destination per line, in execution order. Blank lines are ignored.
+# One SSH destination per line, in presentation order. Hosts run concurrently.
 # Configure SSH aliases and authentication in ~/.ssh/config.
 # server-one
 # user@server-two

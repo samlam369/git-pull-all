@@ -1,14 +1,14 @@
 # PRD: concurrent hosts with a live grouped report
 
-Status: agreed product direction; implementation pending.
+Status: implemented on `feat/parallel-pull`; pending final visual UAC.
 Branch: `feat/parallel-pull`.
 
 This PRD replaces the earlier proposal for a mixed, host-prefixed terminal
 log. The user accepted the grouped live report direction. Requirements below
 capture that direction and the subsequently accepted behavior decisions.
-Remaining implementation details are distinguished below. Visual refinement
+The engineering details record the implemented choices. Visual refinement
 will be assessed at final user acceptance (UAC), with no intermediate prototype
-approval gate. The executable still runs remote hosts sequentially.
+approval gate.
 
 ## Problem and intended outcome
 
@@ -290,18 +290,23 @@ dependencies fail before any SSH launch with installation guidance. Do not
 silently fall back to sequential execution. Local-only gpa remains independent
 of these dependencies.
 
-### Remaining engineering details
+### Implemented engineering details
 
-The following can be resolved during implementation without a product-design
-comparison or intermediate user approval:
-
-- Dependency packaging and supported versions, helper location, and integration
-  with the existing symlink installer.
-- Event encoding, capability detection, and validation of malformed events.
-- Logical scroll-anchor implementation and resize handling.
-- Exact borders, spacing, lifecycle wording, and verbose visual density.
-- Renderer-failure exit status and diagnostics; it must be nonzero, clean up
-  owned processes, and never present an unfinished run as successful.
+- `bin/gpa-hosts.py` lives beside the Bash executable; resolving the installed
+  `gpa` symlink locates the helper without another installed link. Remote mode
+  supports Python 3.10+ and pins Textual 8.2.8 in an installer-managed venv.
+  On apt-based Linux, installation provisions missing system packages; other
+  platforms receive explicit guidance rather than guessed package commands.
+- Supporting remotes emit JSON records after an ASCII record-separator and a
+  `GPA1` protocol tag. Malformed records remain inert, readable text. A remote
+  that ignores `GPA_EVENT_STREAM=1` is handled as an older plain-text peer.
+- The scroll anchor records the top visible host plus its within-section offset
+  before a refresh, then restores that logical position after layout. Textual
+  owns wrapping, resizing, keyboard navigation, and mouse-wheel input.
+- The first interface uses `starting`, `running`, `completed`, `failed`, and
+  `interrupted` lifecycle wording. Refreshes are coalesced on a 100 ms timer.
+- Startup, renderer, and dependency failures return nonzero. SIGINT terminates
+  owned SSH process groups, reaps them, retains partial data, and returns 130.
 
 The user will assess scrolling experience and visual density at final UAC.
 Implement and test the specified behavior first; do not build multiple complete
@@ -363,5 +368,5 @@ git diff --check
 ```
 
 Add meaningful concurrency, process-cleanup, plain-output, and terminal UI
-coverage during implementation. This documentation-only change does not add
-runtime dependencies or authorize live SSH tests, deployment, or publishing.
+coverage during implementation. Implementation and test work does not authorize
+live SSH tests, deployment, or publishing.

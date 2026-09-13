@@ -2,7 +2,7 @@
 
 A small Bash command for pulling the Git repositories you keep on your machines.
 Run `gpa` to update repositories directly under `~` and `~/repos`, or `gpa -a`
-to run the same command on a list of SSH hosts.
+to run the same command concurrently on a list of SSH hosts.
 
 I use this to keep my own checkouts up to date. The layout and defaults
 reflect that workflow; there is no service to run or account to create.
@@ -32,7 +32,8 @@ Add `-v` to include branch and Git output details.
   directories, directory symlinks, and linked worktrees.
 - Runs `git pull --ff-only` on the current branch when it has an upstream.
 - Reports updated, unchanged, skipped, and failed repositories, then a summary.
-- Optionally repeats the operation on configured SSH hosts, in file order.
+- Optionally starts the operation concurrently on configured SSH hosts and
+  presents their results in file order.
 
 It does not search recursively, clone missing repositories, switch branches,
 push commits, or deploy software to other hosts. The local search paths are
@@ -40,11 +41,23 @@ currently fixed; there is no repository exclusion option or dry-run mode.
 
 ## Install
 
-Requires Bash, Git, and sed. Remote hosts also need `env`. The installer needs
-GNU-compatible `realpath` (with `-m` support); remote mode needs SSH.
-The current setup and tests target
-Linux. macOS/BSD installation is not verified and may need GNU coreutils.
-You can invoke `gpa` from Bash, zsh, or fish.
+The one-step installer checks Bash, Git, sed, SSH, GNU-compatible `realpath`,
+Python 3.10+, and Python venv support. On Debian and Ubuntu systems with
+`apt-get`, it installs missing system packages, using `sudo` when required.
+This can prompt for privilege escalation, uses the package network, and is not
+rolled back if a later step fails.
+
+It then creates `${XDG_DATA_HOME:-$HOME/.local/share}/gpa/venv` and installs the
+supported Textual 8.2.8 release there. The environment is owned by this tool;
+it avoids modifying system Python or relying on an activated shell environment.
+Reruns reuse it when the requested version is already installed.
+
+Other Linux distributions must provision missing system packages with their
+own package manager before rerunning the installer. macOS/BSD setup is not
+verified and may need GNU coreutils. `--no-dependencies` skips all dependency
+checks, package operations, and managed-venv setup for externally provisioned
+machines and CI. Local-only execution itself remains independent of Python and
+Textual. Remote hosts need Bash, Git, sed, and `env` to receive pulls.
 
 ```sh
 mkdir -p ~/repos
@@ -53,9 +66,8 @@ git clone https://github.com/samlam369/git-pull-all.git ~/repos/git-pull-all
 ```
 
 Ensure `~/.local/bin` is on PATH. The installer creates a symlink to `bin/gpa`
-in this checkout. It needs no root privileges, does not install dependencies,
-and does not change shell startup files. Rerunning it is safe; it refuses to
-replace unrelated files or symlinks.
+in this checkout and does not change shell startup files or host configuration.
+Rerunning it is safe; it refuses to replace unrelated files or symlinks.
 
 ## Local use
 
@@ -100,7 +112,7 @@ Authentication and SSH aliases use your existing SSH configuration.
 Create `${XDG_CONFIG_HOME:-$HOME/.config}/gpa/hosts`, for example:
 
 ```text
-# One SSH destination per line, in execution order.
+# One SSH destination per line, in presentation order.
 server-one
 user@server-two.example
 ```
@@ -122,15 +134,19 @@ gpa --all --verbose       # same as -av
 GPA_HOSTS_FILE=/path/to/hosts gpa -a
 ```
 
-Remote mode groups output under a `[HOST]` heading with the configured SSH
-destination and its position in the host list, then streams `gpa` or `gpa -v`
-using `ssh -q`. Output and diagnostics are indented four spaces beneath each
-heading; verbose details keep their additional indentation. Successful hosts
-need no extra completion line. Failures add an indented `[FAILED]` line with
-the SSH exit status (which can also reflect a remote command failure).
-It attempts every host even after a failure. There is no separate
-local update unless this machine is also a configured destination. Each remote
-uses its own home directory and repository layout.
+Remote mode validates the complete file, then launches every host concurrently
+with noninteractive SSH. On a terminal, Textual keeps an overall status line
+visible above one vertically scrollable report. Host sections stay in file
+order while they grow live, and Page Up/Page Down, arrow keys, Home/End, and the
+mouse wheel scroll the complete report. Results do not reorder when a host
+finishes. When all output is drained, the interface closes automatically and
+prints the complete grouped report into normal terminal scrollback.
+
+Each host has a separate lifecycle (`starting`, `running`, `completed`,
+`failed`, or `interrupted`). A failed repository does not finish its host; the
+SSH/remote command exit status does. A disconnect retains any pending FETCH and
+adds the host failure. It attempts every host even after a failure. There is no
+separate local update unless this machine is also configured as a destination.
 
 Preview updated, current, skipped, warning, and failed results without network
 activity. The demo includes a mixed-result host, an SSH failure, and an empty
@@ -141,8 +157,12 @@ bash examples/demo-output.sh
 bash examples/demo-output.sh -v
 ```
 
-Output uses four spaces per indentation level, including local summaries and
-verbose details. Remote hosts need the updated version for the same spacing.
+When any standard stream is redirected, the plain fallback streams each line
+immediately with `[destination]` attribution. Blank lines, verbose details, and
+SSH diagnostics are attributed too; diagnostics remain on stderr. It emits no
+cursor controls and does not replay host output at completion. Output uses four
+spaces per indentation level in the final terminal report, including local
+summaries and verbose details.
 
 The final footer reports host command completion and names hosts to revisit:
 
@@ -157,9 +177,13 @@ those hosts may still have successful pulls. Repository counts and warnings
 stay in each host's summary. When every host completes, only the first line
 is printed.
 
-Remote progress requires the updated `gpa` on both ends. Older remote versions
-still show completed results, but cannot send the pending `[FETCH]` status.
-Progress is forwarded without allocating an SSH terminal.
+An updated remote `gpa` sends versioned records so FETCH can be replaced only by
+the matching repository result inside that host. Older remote versions still
+stream ordinary text immediately; they may not provide replaceable FETCH
+records. Capability negotiation never runs a pull twice. Progress is forwarded
+without allocating an SSH terminal. Redirects omit FETCH by default;
+`GPA_PROGRESS=always` makes it a readable attributed line and
+`GPA_PROGRESS=never` suppresses it.
 
 Remote summary colors follow the caller's color choice through `GPA_COLOR`,
 without allocating an SSH terminal. Failed repository counts and the attention
@@ -168,9 +192,14 @@ Nonempty `NO_COLOR` on the caller disables colors throughout; a remote's own
 `NO_COLOR` can also disable its colors. Remote hosts need the updated `gpa` to
 honor the forwarded color choice.
 
-SSH uses its normal host verification and authentication behavior. There is no
-built-in connection timeout or batch mode, so a prompt or stalled connection
-can delay subsequent hosts. Configure those policies in SSH when needed.
+SSH uses normal host verification but enables `BatchMode=yes`: authentication
+or verification that needs a prompt fails that host instead of blocking the
+report. There is no built-in timeout or retry. Configure timeout policy and
+prepare keys and known hosts through ordinary SSH configuration.
+
+Ctrl+C marks unfinished hosts interrupted, retains received output, terminates
+and reaps dispatcher-owned SSH processes, and exits 130. Closing local SSH does
+not guarantee cancellation or rollback of a remote Git operation.
 
 ## Effects and trust
 
@@ -205,8 +234,11 @@ new code takes effect on the next invocation. Updates are not pinned or
 signature-verified by this tool.
 
 To uninstall, remove `~/.local/bin/gpa` after checking that it is the symlink
-pointing at this checkout. The checkout and your host configuration can then
-be removed separately if no longer needed.
+pointing at this checkout. The managed environment under
+`${XDG_DATA_HOME:-$HOME/.local/share}/gpa/venv`, the checkout, and host
+configuration are separate paths and can then be removed if no longer needed.
+System packages installed through apt are not removed automatically because
+they may be shared with other programs.
 
 ## Development
 
@@ -217,6 +249,7 @@ permanent. When changing behavior, update its documentation and tests too.
 
 ```sh
 bash -n bin/gpa install.sh
+python3 -m py_compile bin/gpa-hosts.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 git diff --check
 ```

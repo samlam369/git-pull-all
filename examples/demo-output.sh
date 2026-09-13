@@ -5,12 +5,11 @@
 # in this checkout and overrides HOME, PATH, and GPA_HOSTS_FILE with temporary
 # fixtures. Mock SSH invokes gpa locally; mock Git only reads/writes fixtures.
 # No real SSH or Git runs, and user repositories/configuration are untouched.
-# Fixtures cover successful updates, skips, warnings, pull and SSH failures,
-# and an empty host after failures. Repeated runs start fresh and clean up on
-# exit. Output follows gpa's color and progress policies, including NO_COLOR;
-# remote output is piped just as in real -a mode. Exit 1 is expected; invalid
-# options exit 2, and setup errors stop immediately. Verbosity is forwarded
-# to remote fixtures.
+# Fixtures overlap in time and cover staggered updates, skips, warnings, pull
+# and early SSH failures, plus an older successful host that emits plain text.
+# Repeated runs start fresh and clean up on exit. A terminal uses Textual; a
+# redirect uses the live attributed fallback. Exit 1 is expected; invalid
+# options exit 2, and setup errors stop immediately. Verbosity is forwarded.
 set -eu
 
 case "${1:-}" in
@@ -38,24 +37,41 @@ cat > "$demo_dir/bin/ssh" <<'MOCK'
 #!/usr/bin/env bash
 # Demo-only SSH replacement: accept the fixed gpa command, dispatch locally,
 # or simulate a connection failure. No host input is evaluated as shell code.
-case "$2" in
+case "$1" in
+    -q) ;;
+    *) exit 2 ;;
+esac
+[[ "$2" == -o && "$3" == BatchMode=yes ]] || exit 2
+host=$4
+command=$5
+case "$host" in
     server-offline)
+        sleep 0.05
         printf '%s\n' 'ssh: connection to server-offline timed out' >&2
         exit 255 ;;
-    server-ok|server-mixed|server-empty)
-        case "$3" in
+    server-empty)
+        # Simulate an older gpa: it ignores event negotiation but remains
+        # readable and live in its own section.
+        sleep 0.12
+        printf '%s\n' 'gpa summary: 0 repos' \
+            '    0 updated | 0 current | 0 skipped' \
+            '    0 failed  | 0 warnings' ;;
+    server-ok|server-mixed)
+        case "$command" in
             'env GPA_COLOR=always GPA_PROGRESS='*) color=always ;;
             'env GPA_COLOR=never GPA_PROGRESS='*) color=never ;;
             *) exit 2 ;;
         esac
-        case "$3" in
-            *' GPA_PROGRESS=always gpa'|*' GPA_PROGRESS=always gpa -v') progress=always ;;
-            *' GPA_PROGRESS=never gpa'|*' GPA_PROGRESS=never gpa -v') progress=never ;;
+        case "$command" in
+            *' GPA_PROGRESS=always GPA_EVENT_STREAM=1 gpa'*) progress=always ;;
+            *' GPA_PROGRESS=never GPA_EVENT_STREAM=1 gpa'*) progress=never ;;
             *) exit 2 ;;
         esac
         flags=()
-        [[ "$3" != *' -v' ]] || flags=(-v)
-        HOME="$GPA_DEMO_ROOT/$2" GPA_COLOR="$color" GPA_PROGRESS="$progress" bash "$GPA_DEMO_EXECUTABLE" "${flags[@]}" ;;
+        [[ "$command" != *' -v' ]] || flags=(-v)
+        HOME="$GPA_DEMO_ROOT/$host" GPA_DEMO_HOST="$host" \
+            GPA_COLOR="$color" GPA_PROGRESS="$progress" GPA_EVENT_STREAM=1 \
+            bash "$GPA_DEMO_EXECUTABLE" "${flags[@]}" ;;
     *) exit 2 ;;
 esac
 MOCK
@@ -76,6 +92,13 @@ case "$*" in
     'rev-parse HEAD')
         if [[ -f "$repo/.demo-pulled" ]]; then printf 'bbbbbbb\n'; else printf 'aaaaaaa\n'; fi ;;
     'pull --ff-only')
+        # Different delays make concurrent hosts visibly overlap without
+        # making production scheduling or tests depend on timing guesses.
+        case "${GPA_DEMO_HOST:-}:$name" in
+            server-ok:app) sleep 0.30 ;;
+            server-mixed:diverged) sleep 0.10 ;;
+            *) sleep 0.04 ;;
+        esac
         case "$name" in
             diverged)
                 printf 'fatal: Not possible to fast-forward, aborting.\n'

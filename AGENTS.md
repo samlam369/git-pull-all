@@ -11,9 +11,10 @@ maintainer's environment. Prefer focused changes over adding infrastructure.
 
 - `bin/gpa` owns argument parsing, repository discovery, pulls, SSH dispatch,
   and result summaries. Bash, zsh, and fish invoke the same executable.
-- `install.sh` owns the user-level executable symlink and the explicitly
-  requested legacy-link migration. It does not own dependencies, shell PATH,
-  or host configuration.
+- `install.sh` owns dependency preflight/provisioning, the managed Textual
+  virtual environment, the user-level executable symlink, and the explicitly
+  requested legacy-link migration. It does not own shell PATH or host
+  configuration.
 - `examples/hosts` documents the host-file format using fictional destinations.
 - `tests/test_gpa.py` verifies behavior with temporary homes, local Git fixtures,
   and mocked SSH.
@@ -117,9 +118,11 @@ the effects below rather than treating the existing mechanism as mandatory.
 - Do not apply `set -e` mechanically to the main command: failure aggregation
   and arithmetic statuses need deliberate handling. The installer uses
   strict mode because its filesystem operations should stop on failure.
-- The installer currently supports repeat runs and narrowly scoped migration.
-  Reconsidering its mechanism is fine; protect unrelated user files and make
-  any new replacement behavior explicit rather than silently broadening it.
+- The installer supports repeat runs, a narrowly scoped migration, apt-based
+  dependency provisioning, and a pinned Textual release in a managed venv.
+  `--no-dependencies` keeps externally provisioned and test environments free
+  of package changes. Protect unrelated user files, report network/system
+  effects before running them, and do not guess commands for other platforms.
 - Keep dependencies and platform claims explicit. Do not claim portability
   beyond what has been checked or silently add setup/network side effects.
 
