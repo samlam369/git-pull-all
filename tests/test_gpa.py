@@ -177,6 +177,62 @@ class GpaTests(unittest.TestCase):
         self.assertTrue(result.stdout.endswith(
             "\ngpa hosts: 1/3 completed\n    Needs attention: zebra, alpha\n"))
 
+    def test_demo_color_reaches_host_summaries_without_terminal_progress(self):
+        for flags in ((), ("-v",)):
+            for term, no_color, colored in (("xterm", "", True),
+                                            ("dumb", "", False),
+                                            ("xterm", "1", False)):
+                with self.subTest(flags=flags, term=term, no_color=no_color):
+                    self.env.update(TERM=term, NO_COLOR=no_color)
+                    result, output = self.run_pty("examples/demo-output.sh", *flags)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertNotIn("[FETCH", output)
+                    self.assertNotIn("\x1b[2K", output)
+                    if colored:
+                        self.assertIn("\x1b[31m1 failed", output)
+                        self.assertIn("\x1b[33m2 warnings\x1b[0m", output)
+                        self.assertIn("\x1b[31mNeeds attention: server-mixed, server-offline\x1b[0m", output)
+                    else:
+                        self.assertNotIn("\x1b[", output)
+                        self.assertIn("2 warnings", output)
+
+    def test_explicit_color_policy_for_piped_demo(self):
+        for policy, no_color, colored in (("always", "", True),
+                                          ("always", "1", False),
+                                          ("never", "", False)):
+            with self.subTest(policy=policy, no_color=no_color):
+                self.env.update(GPA_COLOR=policy, NO_COLOR=no_color, TERM="dumb")
+                result = subprocess.run(
+                    ["bash", str(ROOT / "examples/demo-output.sh")],
+                    env=self.env, text=True, capture_output=True,
+                )
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual("\x1b[31m1 failed" in result.stdout, colored)
+                self.assertEqual("\x1b[33m2 warnings" in result.stdout, colored)
+                if not colored:
+                    self.assertNotIn("\x1b[", result.stdout)
+
+    def test_demo_covers_results_in_compact_and_verbose_modes(self):
+        for flags in ((), ("-v",)):
+            with self.subTest(flags=flags):
+                result = subprocess.run(
+                    ["bash", str(ROOT / "examples/demo-output.sh"), *flags],
+                    env=self.env, text=True, capture_output=True,
+                )
+                self.assertEqual(result.returncode, 1, result.stderr)
+                for status in ("UPDATED", "CURRENT", "SKIPPED", "FAILED"):
+                    self.assertIn(f"    [{status}", result.stdout)
+                for detail in ("remote forced update", "local changes restored",
+                               "git warning", "detached@aaaaaaa", "no upstream"):
+                    self.assertIn(detail, result.stdout)
+                self.assertIn("    gpa summary: 0 repos", result.stdout)
+                self.assertTrue(result.stdout.endswith(
+                    "gpa hosts: 2/4 completed\n    Needs attention: server-mixed, server-offline\n"))
+                self.assertEqual("        Branch:" in result.stdout, bool(flags))
+                self.assertNotIn("\n\n\n", result.stdout)
+                self.assertNotIn("\x1b[", result.stdout)
+                self.assertEqual(self.calls(), [])
+
     def test_invalid_config_is_rejected_before_any_ssh(self):
         for content in (None, "", "# only a comment\n\n", "valid\n-oProxyCommand=evil\n", "valid\nhost other\n", "valid\nhost;echo\n"):
             with self.subTest(content=content):

@@ -106,6 +106,15 @@ It attempts every host even after a failure. There is no separate
 local update unless this machine is also a configured destination. Each remote
 uses its own home directory and repository layout.
 
+Preview updated, current, skipped, warning, and failed results without network
+activity. The demo includes a mixed-result host, an SSH failure, and an empty
+host processed after the failures:
+
+```sh
+bash examples/demo-output.sh
+bash examples/demo-output.sh -v
+```
+
 Output uses four spaces per indentation level, including local summaries and
 verbose details. Remote hosts need the updated version for the same spacing.
 
