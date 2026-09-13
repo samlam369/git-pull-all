@@ -20,6 +20,11 @@ maintainer's environment. Prefer focused changes over adding infrastructure.
   and mocked SSH.
 - `README.md` is the public usage contract; `AGENTS.md` is the development
   contract. Explain implementation decisions next to the relevant code.
+  Keep README focused on getting started and setting user expectations;
+  detailed setup belongs in `docs/install.md` and SSH behavior in
+  `docs/ssh-hosts.md`. Keep engineering
+  rationale beside the implementation and validation history in development
+  records rather than repeating them in the user guide.
 
 ## Decision records support informed changes
 

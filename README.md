@@ -4,6 +4,12 @@ A small Bash command for pulling the Git repositories you keep on your machines.
 Run `gpa` to update repositories directly under `~` and `~/repos`, or `gpa -a`
 to run the same command concurrently on a list of SSH hosts.
 
+GPA runs with your existing user permissions.
+Local updates use Bash, Git, and standard command-line tools. Remote
+updates add Python on the initiating machine, and the live interface adds
+Textual. If the system prerequisites are already available, installation stays
+within your user account.
+
 I use this to keep my own checkouts up to date. The layout and defaults
 reflect that workflow; there is no service to run or account to create.
 
@@ -39,41 +45,31 @@ It does not search recursively, clone missing repositories, switch branches,
 push commits, or deploy software to other hosts. The local search paths are
 currently fixed; there is no repository exclusion option or dry-run mode.
 
+## What your environment can run
+
+Choose the capabilities you need based on the tools available in your
+environment:
+
+| Capability | Tools needed | If the additional tools are missing |
+| --- | --- | --- |
+| Update local repositories with `gpa` | Bash, Git, sed, and standard shell utilities | Install the basic tools to use local updates |
+| Start concurrent SSH updates with `gpa -a` | Local tools plus SSH client, GNU-compatible `realpath`, and Python 3.10+ | Local updates still work |
+| Show the interactive live interface | Remote-update tools plus Textual (installer pins 8.2.8) | Remote updates still work with redirected, plain-text output |
+| Receive updates on an SSH host | An accessible SSH service/account, with `gpa`, Bash, Git, sed, and `env` available | Other configured hosts can still receive updates |
+
+Git may also need SSH or credential helpers depending on your repository URLs
+and configuration. In every mode, the account performing the pull needs write
+access to its repositories and access to their upstreams.
+
+Without Textual, use `gpa -a > gpa.log` for plain-text remote output. A fully
+interactive terminal requires Textual and stops with an error if it is missing;
+there is no `--plain` flag or automatic missing-Textual fallback.
+
 ## Install
 
-The one-step installer checks Bash, Git, sed, SSH, GNU-compatible `realpath`,
-Python 3.10+, and Python venv/ensurepip support. It identifies the platform
-before choosing package names:
-
-- Debian and Ubuntu: `apt-get update` and `apt-get install` for missing
-  prerequisites, using `sudo` when not root.
-- Termux: `pkg install` with Termux package names, without `sudo` or direct
-  `apt-get` calls. Python setup includes `python-pip` and
-  `python-ensurepip-wheels`; SSH comes from `openssh`.
-
-Package provisioning uses the network and may prompt for privileges on
-Debian/Ubuntu. It can update shared Python packages to satisfy dependencies;
-partial system-package changes are not rolled back automatically. There is
-no full-system upgrade or autoremove step. See the
-[installation validation matrix](docs/install-platforms.md) for tested releases
-and the limits of that evidence.
-
-It then creates `${XDG_DATA_HOME:-$HOME/.local/share}/gpa/venv` and installs the
-supported Textual 8.2.8 release there. The environment is owned by this tool;
-it avoids modifying system Python or relying on an activated shell environment.
-Reruns reuse it when the requested version is already installed.
-
-Other distributions must install the listed commands and Python venv/ensurepip
-support using their own package manager before running the normal installer;
-it can then create the managed Textual environment without system-package
-operations. The existence of `apt-get` alone does not enable provisioning on
-an unknown distribution. Alternatively, fully provision Python and Textual
-8.2.8 externally and use `install.sh --no-dependencies`.
-macOS/BSD setup is not verified and may need GNU coreutils. The flag
-skips all dependency checks, package operations, and managed-venv setup, so the
-caller owns those dependencies. Local-only execution itself remains independent
-of Python and Textual. Remote hosts need Bash, Git, sed, and `env` to receive
-pulls.
+Run these commands as your usual user. The installer prepares local and SSH
+capabilities; installing missing Debian/Ubuntu system packages requires sudo
+when running as non-root.
 
 ```sh
 mkdir -p ~/repos
@@ -81,9 +77,13 @@ git clone https://github.com/samlam369/git-pull-all.git ~/repos/git-pull-all
 ~/repos/git-pull-all/install.sh
 ```
 
-Ensure `~/.local/bin` is on PATH. The installer creates a symlink to `bin/gpa`
-in this checkout and does not change shell startup files or host configuration.
-Rerunning it is safe; it refuses to replace unrelated files or symlinks.
+Ensure `~/.local/bin` is on your PATH, then run `gpa`.
+The installer manages its Python environment automatically.
+
+For setup using existing dependencies or local tools only, and for
+troubleshooting, see the [installation guide](docs/install.md).
+See [installer platforms](docs/install-platforms.md) for package requirements
+and verified environments.
 
 ## Local use
 
@@ -121,9 +121,19 @@ use automatic terminal detection. Redirected output omits progress by default.
 
 ## SSH hosts
 
-Install `gpa` on each remote machine first and make it available on that user's
-noninteractive SSH PATH. Check this with `ssh server-one 'command -v gpa'`.
-Authentication and SSH aliases use your existing SSH configuration.
+### Prepare the remote hosts
+
+Install `gpa` on each remote machine and ensure it is available to the remote
+account in a noninteractive SSH session. Check that it starts with
+`ssh server-one 'gpa --help'`, replacing `server-one` with your destination.
+This does not update repositories or verify access to their Git upstreams.
+
+Connections use your SSH client configuration, including host aliases and
+keys. Each remote account uses its own Git configuration and credentials when
+pulling repositories. Prepare SSH authentication and host verification before
+running GPA: connections that require a prompt will fail.
+
+### Configure destinations
 
 Create `${XDG_CONFIG_HOME:-$HOME/.config}/gpa/hosts`, for example:
 
@@ -133,110 +143,35 @@ server-one
 user@server-two.example
 ```
 
-Blank lines and full-line comments are ignored. Each destination must occupy
-a whole line without surrounding whitespace. Destinations start with an ASCII
-letter, digit, or underscore and otherwise contain only letters, digits,
-underscores, dots, `@`, colons, or hyphens. Put ports and SSH options in
-`~/.ssh/config`; use aliases for addresses outside this format.
-Missing, empty, or invalid configuration fails before any host is contacted.
-The installer does not create or overwrite this file; `examples/hosts` is a
-template for your own configuration.
+Blank lines and full-line comments are ignored. Put ports and other SSH options
+in `~/.ssh/config` and use host aliases here. The installer leaves this file
+to you; [examples/hosts](examples/hosts) provides a template.
+
+### Run
 
 ```sh
-gpa -a                    # configured hosts, compact output
-gpa -av                   # verbose on every host
-gpa -va                   # same as -av
-gpa --all --verbose       # same as -av
-GPA_HOSTS_FILE=/path/to/hosts gpa -a
+gpa -a                    # update configured hosts
+gpa -av                   # include verbose details from every host
 ```
 
-Remote mode validates the complete file, then launches every host concurrently
-with noninteractive SSH. On a terminal, Textual keeps an overall status line
-visible above one report. Host sections stay in file order while they grow
-live, and results do not reorder when a host finishes. When all output is
-drained, the interface closes automatically and prints the complete grouped
-report into normal terminal scrollback.
+Only listed destinations are updated. To include this machine, add it as a
+destination or run local `gpa` separately.
 
-The live view and final report share the heading
-`[HOST   ] server-one  (1/7)` and four-space repository indentation. The live
-view appends the current host status, for example
-`[HOST   ] server-one  (1/7)  running`; the final heading omits that live status.
+### What to expect
 
-The live interface uses the terminal's default foreground/background and ANSI
-palette, including the scrollbar, so light/dark colors and transparency remain
-terminal-controlled. The scrollbar thumb uses the same default foreground as
-the main text, including when hovered or dragged. Page Up/Page Down, arrow
-keys, Home/End, and the mouse wheel scroll the live report while hosts run.
-Earlier host sections growing
-preserve a stationary reader's host-relative position; active user scrolling
-takes precedence over layout compensation. The complete report remains in
-normal terminal scrollback after the run. The scrolling fix has automated
-coverage and has passed user acceptance, tracked in `docs/parallel-hosts.md`.
-On POSIX, the live view uses cell-based mouse reporting and ordinary terminal
-resize signals. This avoids a T3 Code 0.0.40 startup issue where pixel mouse
-reporting begins before the terminal supplies its pixel dimensions, disrupting
-both mouse navigation and keyboard focus until the panel is resized.
+Hosts run concurrently. On a terminal, the live report keeps them in file
+order and follows your terminal colors. Use the mouse wheel, arrow keys,
+Page Up/Page Down, or Home/End to scroll while updates run. The complete
+report remains in terminal scrollback when finished. Redirected output uses
+immediate, host-labelled text instead.
 
-Each host has a separate lifecycle (`starting`, `running`, `completed`,
-`failed`, or `interrupted`). A failed repository does not finish its host; the
-SSH/remote command exit status does. A disconnect retains any pending FETCH and
-adds the host failure. It attempts every host even after a failure. There is no
-separate local update unless this machine is also configured as a destination.
+A failed host does not stop the others. Each host has its own repository
+summary; the final footer lists hosts needing attention. Ctrl+C stops local
+SSH workers and retains partial results, but cannot guarantee cancellation
+or rollback of work already running remotely.
 
-Preview updated, current, skipped, warning, and failed results without network
-activity. The demo includes a mixed-result host, an SSH failure, and an empty
-host processed after the failures:
-
-```sh
-bash examples/demo-output.sh
-bash examples/demo-output.sh -v
-```
-
-When any standard stream is redirected, the plain fallback streams each line
-immediately with `[destination]` attribution. Blank lines, verbose details, and
-SSH diagnostics are attributed too; diagnostics remain on stderr. It emits no
-cursor controls and does not replay host output at completion. Output uses four
-spaces per indentation level in the final terminal report, including local
-summaries and verbose details.
-
-The final footer reports host command completion and names hosts to revisit:
-
-```text
-gpa hosts: 2/4 completed
-    Needs attention: server-mixed, server-offline
-```
-
-Completed means the remote command exited successfully, including repository
-skips and warnings. The attention list covers nonzero SSH/remote command exits;
-those hosts may still have successful pulls. Repository counts and warnings
-stay in each host's summary. When every host completes, only the first line
-is printed.
-
-An updated remote `gpa` sends versioned records so FETCH can be replaced only by
-the matching repository result inside that host. Older remote versions still
-stream ordinary text immediately; they may not provide replaceable FETCH
-records. Capability negotiation never runs a pull twice. Progress is forwarded
-without allocating an SSH terminal. Redirects omit FETCH by default;
-`GPA_PROGRESS=always` makes it a readable attributed line and
-`GPA_PROGRESS=never` suppresses it.
-
-Remote summary colors follow the caller's color choice through `GPA_COLOR`,
-without allocating an SSH terminal. Failed repository counts and the attention
-list are red; warning counts are yellow. Redirected output is plain by default.
-Nonempty `NO_COLOR` on the caller disables colors throughout; a remote's own
-`NO_COLOR` can also disable its colors. Remote hosts need the updated `gpa` to
-honor the forwarded color choice.
-
-SSH uses normal host verification but enables `BatchMode=yes`: authentication
-or verification that needs a prompt fails that host instead of blocking the
-report. SSH stdin is connected to `/dev/null` so it cannot consume live-view
-keyboard or mouse input; remote commands receive EOF rather than terminal
-input. There is no built-in timeout or retry. Configure timeout policy and
-prepare keys and known hosts through ordinary SSH configuration.
-
-Ctrl+C marks unfinished hosts interrupted, retains received output, terminates
-and reaps dispatcher-owned SSH processes, and exits 130. Closing local SSH does
-not guarantee cancellation or rollback of a remote Git operation.
+See the [SSH reference](docs/ssh-hosts.md) for host-file rules, alternate
+configuration paths, output controls, completion states, and connection policy.
 
 ## Effects and trust
 
@@ -278,6 +213,10 @@ System packages installed through apt are not removed automatically because
 they may be shared with other programs.
 
 ## Development
+
+Engineering decisions are documented beside the relevant implementation.
+See the [documentation index](docs/README.md) for usage references and
+development records.
 
 The defaults reflect my current workflow and can be revisited as needs change.
 Comments record intent, assumptions, and useful tradeoffs so future changes can
