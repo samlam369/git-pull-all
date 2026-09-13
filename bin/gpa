@@ -8,21 +8,24 @@
 # Inputs: local mode searches HOME and HOME/repos, independent of cwd.
 #   Remote mode reads GPA_HOSTS_FILE when nonempty, otherwise
 #   ${XDG_CONFIG_HOME:-$HOME/.config}/gpa/hosts. Hosts are SSH destinations;
-#   the file is data, not shell code. Nonempty NO_COLOR disables summary color.
+#   the file is data, not shell code. GPA_COLOR=always/never overrides automatic
+#   terminal color detection; nonempty NO_COLOR takes precedence and disables it.
 # Interactions: install.sh links this executable into ~/.local/bin; the user
 #   manages PATH, host configuration, and Git/SSH authentication separately.
-#   Remote hosts need gpa on their noninteractive PATH. Only -v is forwarded;
-#   each host uses its own HOME, repository state, and Git configuration.
+#   Remote hosts need gpa on their noninteractive PATH. Forward -v and the
+#   caller's color choice; each host uses its own HOME and Git configuration.
 # Effects: git pull --ff-only contacts upstreams and can change Git state and
 #   working trees. Existing hooks, helpers, and autostash settings still apply.
 #   Repeated runs pull again; there is no rollback of earlier successful pulls.
 #   Git terminal prompts are disabled, but SSH/helpers may still prompt or wait.
 # Output/status: results and summaries go to stdout, argument/configuration
 #   errors and host failure notices to stderr. Pull diagnostics are captured
-#   in results. Exit 0 includes skips; 1 means a pull/SSH/remote command failed;
+#   in results. Remote output has destination blocks and a host completion
+#   footer naming destinations whose SSH/remote command returned nonzero.
+#   Exit 0 includes skips; 1 means a pull/SSH/remote command failed;
 #   2 means invalid arguments or local host configuration. Failures do not stop
 #   later repositories/hosts. Remote mode has no additional local update.
-# Requires: Bash, Git, sed; SSH for -a and whoami/hostname on remote hosts.
+# Requires: Bash, Git, sed; SSH locally and env remotely for -a.
 #   The current implementation is tested on Linux and shared by zsh and fish.
 
 # Parse the entire implementation before running pulls, so updating this
@@ -41,7 +44,8 @@ for arg in "$@"; do
             printf '%s\n' 'Usage: gpa [-a|--all] [-v|--verbose]' \
                 'Pull repositories under ~ and ~/repos with --ff-only.' \
                 '-a: run on hosts from ${XDG_CONFIG_HOME:-$HOME/.config}/gpa/hosts.' \
-                'GPA_HOSTS_FILE overrides the hosts file. Combine flags as -av.'
+                'GPA_HOSTS_FILE overrides the hosts file. Combine flags as -av.' \
+                '-v: include branch and Git details, including on remote hosts.'
             return 0
             ;;
         --verbose) verbose=1 ;;
@@ -62,11 +66,22 @@ for arg in "$@"; do
     esac
 done
 
+# SSH output is piped for indentation and normally has no terminal. Let the
+# dispatcher pass its color choice without requesting a PTY (which would also
+# enable progress controls). NO_COLOR on either end remains an explicit opt-out.
+declare color_red='' color_yellow='' color_reset=''
+if [[ -z "${NO_COLOR:-}" && "${GPA_COLOR:-auto}" != never ]] &&
+    { [[ "${GPA_COLOR:-auto}" == always ]] || [[ -t 1 && "${TERM:-dumb}" != dumb ]]; }; then
+    color_red=$'\e[31m' color_yellow=$'\e[33m' color_reset=$'\e[0m'
+fi
+
 if (( all_hosts )); then
-    declare host remote_status=0
-    # Keep shell syntax fixed and expand identity on the remote host. Forward
-    # verbosity only: forwarding -a would recursively dispatch to more hosts.
-    declare remote_command='printf "\n%s@%s\n\n" "$(whoami)" "$(hostname)"; gpa'
+    declare host remote_status=0 host_status host_index=0 completed=0 attention_hosts=''
+    # Use only fixed command strings, never host data or environment values as
+    # shell source. Forward color and verbosity, but not recursive dispatch (-a).
+    # Label destinations locally so a failed connection still has a heading.
+    declare remote_command='env GPA_COLOR=never gpa'
+    [[ -n "$color_red" ]] && remote_command='env GPA_COLOR=always gpa'
     (( verbose )) && remote_command+=' -v'
     declare hosts_file=${GPA_HOSTS_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/gpa/hosts}
     declare -a hosts=()
@@ -90,15 +105,56 @@ if (( all_hosts )); then
         printf 'gpa: no hosts configured in %s\n' "$hosts_file" >&2
         return 2
     fi
-    # Sequential dispatch keeps each host's output together, at the cost of
-    # letting a slow connection delay later hosts. SSH owns timeout policy.
+    # Prefix lines as they arrive, retaining verbose detail indentation and
+    # blank separators. read's EOF fallback preserves unterminated diagnostics.
+    __gpa_indent() {
+        local line
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            if [[ -n "$line" ]]; then
+                printf '    %s\n' "$line"
+            else
+                printf '\n'
+            fi
+        done
+    }
+
+    # Stream output within host blocks so slow pulls remain visible. Do not
+    # infer repository counts from remote text: older gpa versions may format
+    # results differently, and SSH failures may leave an incomplete summary.
+    # Sequential dispatch keeps blocks together; SSH owns timeout policy.
     for host in "${hosts[@]}"; do
-        if ! ssh -q "$host" "$remote_command"; then
-            printf 'gpa: failed on %s\n' "$host" >&2
+        (( host_index++ ))
+        (( host_index > 1 )) && printf '\n'
+        printf '[%-7s] %s  (%d/%d)\n' "HOST" "$host" "$host_index" "${#hosts[@]}"
+        # Keep diagnostics on stderr and wait for its formatter before the
+        # next host. Read SSH's status, not the stdout formatter's exit status.
+        {
+            exec 3> >(__gpa_indent >&2)
+            formatter_pid=$!
+            ssh -q "$host" "$remote_command" 2>&3 3>&-
+            host_status=$?
+            exec 3>&-
+            wait "$formatter_pid"
+            exit "$host_status"
+        } | __gpa_indent
+        host_status=${PIPESTATUS[0]}
+        if (( host_status == 0 )); then
+            (( completed++ ))
+        else
+            attention_hosts+="${attention_hosts:+, }$host"
+            printf '    [%-7s] %s  ssh or remote gpa failed (exit %d)\n' "FAILED" "$host" "$host_status"
+            printf '    gpa: failed on %s\n' "$host" >&2
             remote_status=1
         fi
     done
-    exit "$remote_status"
+    # This footer tracks command completion, not repository totals or warning
+    # counts. A nonzero exit may follow some successful pulls; name the hosts
+    # to revisit without implying that all their repositories failed.
+    printf '\ngpa hosts: %d/%d completed\n' "$completed" "${#hosts[@]}"
+    if [[ -n "$attention_hosts" ]]; then
+        printf '    %sNeeds attention: %s%s\n' "$color_red" "$attention_hosts" "$color_reset"
+    fi
+    return "$remote_status"
 fi
 
 declare total=0 updated=0 current=0 skipped=0 failed=0 warnings=0
@@ -134,8 +190,8 @@ __gpa_pull() {
         reason="no upstream"
         if (( verbose )); then
             printf '%s\n' "[$repo_status] $label"
-            [[ -n "$branch" ]] && printf '%s\n' "  Branch: $branch"
-            printf '%s\n' "  Result: $reason"
+            [[ -n "$branch" ]] && printf '%s\n' "    Branch: $branch"
+            printf '%s\n' "    Result: $reason"
             printf '%s\n' ""
         else
             if [[ -n "$branch" ]]; then
@@ -224,11 +280,11 @@ __gpa_pull() {
 
     if (( verbose )); then
         printf '%s\n' "[$repo_status] $label"
-        [[ -n "$branch" ]] && printf '%s\n' "  Branch: $branch"
-        printf '%s\n' "  Result: $reason"
+        [[ -n "$branch" ]] && printf '%s\n' "    Branch: $branch"
+        printf '%s\n' "    Result: $reason"
         if [[ -n "$details" ]]; then
             while IFS= read -r line; do
-                [[ -n "$line" ]] && printf '%s\n' "  $line"
+                [[ -n "$line" ]] && printf '%s\n' "    $line"
             done <<< "$details"
         fi
         printf '%s\n' ""
@@ -240,7 +296,7 @@ __gpa_pull() {
         fi
         if [[ "$repo_status" == "FAILED" && -n "$details" ]]; then
             while IFS= read -r line; do
-                [[ -n "$line" ]] && printf '%s\n' "  $line"
+                [[ -n "$line" ]] && printf '%s\n' "    $line"
             done <<< "$details"
         fi
     fi
@@ -274,16 +330,14 @@ declare first_width=${#updated_text}
 # Pad before adding ANSI colors so escape sequences do not affect alignment.
 printf -v updated_text '%-*s' "$first_width" "$updated_text"
 printf -v failed_text '%-*s' "$first_width" "$failed_text"
-if [[ -t 1 && "${TERM:-dumb}" != dumb && -z "${NO_COLOR:-}" ]]; then
-    (( failed > 0 )) && failed_text=$'\e[31m'"$failed_text"$'\e[0m'
-    (( warnings > 0 )) && warning_text=$'\e[33m'"$warning_text"$'\e[0m'
-fi
+(( failed > 0 )) && failed_text="${color_red}${failed_text}${color_reset}"
+(( warnings > 0 )) && warning_text="${color_yellow}${warning_text}${color_reset}"
 
 # Verbose repo blocks already end with a blank line.
 (( ! verbose || total == 0 )) && printf '%s\n' ""
 printf 'gpa summary: %d repos\n' "$total"
-printf '  %s | %s | %d skipped\n' "$updated_text" "$current_text" "$skipped"
-printf '  %s | %s\n' "$failed_text" "$warning_text"
+printf '    %s | %s | %d skipped\n' "$updated_text" "$current_text" "$skipped"
+printf '    %s | %s\n' "$failed_text" "$warning_text"
 
 (( failed == 0 ))
 

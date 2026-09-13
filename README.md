@@ -21,8 +21,9 @@ currently fixed; there is no repository exclusion option or dry-run mode.
 
 ## Install
 
-Requires Bash, Git, and sed. The installer also needs GNU-compatible `realpath`
-(with `-m` support); remote mode needs SSH. The current setup and tests target
+Requires Bash, Git, and sed. Remote hosts also need `env`. The installer needs
+GNU-compatible `realpath` (with `-m` support); remote mode needs SSH.
+The current setup and tests target
 Linux. macOS/BSD installation is not verified and may need GNU coreutils.
 You can invoke `gpa` from Bash, zsh, or fish.
 
@@ -54,13 +55,15 @@ Example summary (illustrative):
 
 ```text
 gpa summary: 4 repos
-  1 updated | 2 current | 1 skipped
-  0 failed  | 0 warnings
+    1 updated | 2 current | 1 skipped
+    0 failed  | 0 warnings
 ```
 
 Branches without an upstream, including detached HEADs, are skipped. A failed
 pull does not stop later repositories. `--verbose` is equivalent to `-v`.
-Set `NO_COLOR=1` to disable summary colors.
+Summary colors are automatic on a color-capable terminal. `GPA_COLOR=always`
+forces them, `GPA_COLOR=never` disables them, and other values use automatic
+detection. Nonempty `NO_COLOR` takes precedence and disables colors.
 
 ## SSH hosts
 
@@ -93,10 +96,38 @@ gpa --all --verbose       # same as -av
 GPA_HOSTS_FILE=/path/to/hosts gpa -a
 ```
 
-Remote mode prints each remote user and hostname, then runs `gpa` or `gpa -v`
-using `ssh -q`. It attempts every host even after a failure. There is no separate
+Remote mode groups output under a `[HOST]` heading with the configured SSH
+destination and its position in the host list, then streams `gpa` or `gpa -v`
+using `ssh -q`. Output and diagnostics are indented four spaces beneath each
+heading; verbose details keep their additional indentation. Successful hosts
+need no extra completion line. Failures add an indented `[FAILED]` line with
+the SSH exit status (which can also reflect a remote command failure).
+It attempts every host even after a failure. There is no separate
 local update unless this machine is also a configured destination. Each remote
 uses its own home directory and repository layout.
+
+Output uses four spaces per indentation level, including local summaries and
+verbose details. Remote hosts need the updated version for the same spacing.
+
+The final footer reports host command completion and names hosts to revisit:
+
+```text
+gpa hosts: 2/4 completed
+    Needs attention: server-mixed, server-offline
+```
+
+Completed means the remote command exited successfully, including repository
+skips and warnings. The attention list covers nonzero SSH/remote command exits;
+those hosts may still have successful pulls. Repository counts and warnings
+stay in each host's summary. When every host completes, only the first line
+is printed.
+
+Remote summary colors follow the caller's color choice through `GPA_COLOR`,
+without allocating an SSH terminal. Failed repository counts and the attention
+list are red; warning counts are yellow. Redirected output is plain by default.
+Nonempty `NO_COLOR` on the caller disables colors throughout; a remote's own
+`NO_COLOR` can also disable its colors. Remote hosts need the updated `gpa` to
+honor the forwarded color choice.
 
 SSH uses its normal host verification and authentication behavior. There is no
 built-in connection timeout or batch mode, so a prompt or stalled connection

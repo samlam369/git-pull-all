@@ -1,10 +1,13 @@
 """Offline integration tests: python3 -m unittest discover -s tests -v."""
 
+import errno
 import json
 import os
 from pathlib import Path
+import pty
 import subprocess
 import tempfile
+import threading
 import unittest
 
 
@@ -26,13 +29,18 @@ class GpaTests(unittest.TestCase):
                         PATH=f"{self.mock_bin}:{os.environ['PATH']}",
                         SSH_LOG=str(self.log), GIT_CONFIG_NOSYSTEM="1",
                         GIT_CONFIG_GLOBAL="/dev/null")
-        for key in ("GPA_HOSTS_FILE", "SSH_FAIL_HOST"):
+        for key in ("GPA_HOSTS_FILE", "SSH_FAIL_HOST", "SSH_FAIL_STATUS", "SSH_STDOUT",
+                    "SSH_VERBOSE_STDOUT", "SSH_STDERR", "NO_COLOR", "GPA_COLOR"):
             self.env.pop(key, None)
         ssh = self.mock_bin / "ssh"
         ssh.write_text("#!/usr/bin/env python3\nimport json, os, sys\n"
                        "with open(os.environ['SSH_LOG'], 'a') as f:\n"
                        "    f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
-                       "sys.exit(255 if sys.argv[2] == os.environ.get('SSH_FAIL_HOST') else 0)\n")
+                       "key = 'SSH_VERBOSE_STDOUT' if sys.argv[3].endswith(' gpa -v') else 'SSH_STDOUT'\n"
+                       "sys.stdout.write(os.environ.get(key, ''))\n"
+                       "sys.stderr.write(os.environ.get('SSH_STDERR', ''))\n"
+                       "sys.exit(int(os.environ.get('SSH_FAIL_STATUS', '255'))\n"
+                       "         if sys.argv[2] in os.environ.get('SSH_FAIL_HOST', '').split(',') else 0)\n")
         ssh.chmod(0o755)
 
     def run_gpa(self, *args):
@@ -59,16 +67,115 @@ class GpaTests(unittest.TestCase):
                 self.assertEqual([call[1] for call in calls], ["node-00", "user@server.example", "NODE4"])
                 for call in calls:
                     self.assertEqual(call[0], "-q")
-                    self.assertIn("whoami", call[2])
-                    self.assertIn("hostname", call[2])
-                    self.assertTrue(call[2].endswith("gpa -v" if any("v" in flag for flag in flags) else "gpa"))
+                    self.assertEqual(call[2], "env GPA_COLOR=never gpa" + (" -v" if any("v" in flag for flag in flags) else ""))
+
+    def test_remote_host_blocks_preserve_normal_and_verbose_output(self):
+        self.hosts("first\nlast\n")
+        self.env["SSH_STDOUT"] = "[CURRENT] ~/project  already up to date\ngpa summary: 1 repos\n"
+        self.env["SSH_VERBOSE_STDOUT"] = "[CURRENT] ~/project\n    Branch: main\n    Result: already up to date\n\ngpa summary: 1 repos\n"
+        for flags, key in ((("-a",), "SSH_STDOUT"), (("-av",), "SSH_VERBOSE_STDOUT")):
+            with self.subTest(flags=flags):
+                result = self.run_gpa(*flags)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, "")
+                for index, host in enumerate(("first", "last"), 1):
+                    self.assertIn(
+                        f"[HOST   ] {host}  ({index}/2)\n"
+                        + "".join(f"    {line}\n" if line else "\n"
+                                  for line in self.env[key].splitlines()),
+                        result.stdout,
+                    )
+                self.assertIn("\n\n[HOST   ] last", result.stdout)
+                self.assertNotIn("[DONE", result.stdout)
+                self.assertTrue(result.stdout.endswith(
+                    "\ngpa hosts: 2/2 completed\n"))
+                self.assertNotIn("\x1b[", result.stdout)
 
     def test_remote_failure_continues(self):
         self.hosts("first\nbroken\nlast\n")
         self.env["SSH_FAIL_HOST"] = "broken"
+        for status in (255, 1):
+            with self.subTest(status=status):
+                self.env["SSH_FAIL_STATUS"] = str(status)
+                self.log.unlink(missing_ok=True)
+                result = self.run_gpa("-a")
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual([call[1] for call in self.calls()], ["first", "broken", "last"])
+                self.assertIn(f"    [FAILED ] broken  ssh or remote gpa failed (exit {status})\n", result.stdout)
+                self.assertIn("[HOST   ] last  (3/3)\n", result.stdout)
+                self.assertNotIn("[DONE", result.stdout)
+                self.assertTrue(result.stdout.endswith(
+                    "\ngpa hosts: 2/3 completed\n    Needs attention: broken\n"))
+                self.assertEqual(result.stderr, "    gpa: failed on broken\n")
+
+    def test_remote_diagnostics_keep_their_output_stream(self):
+        self.hosts("broken\n")
+        self.env.update(SSH_FAIL_HOST="broken", SSH_STDOUT="partial result",
+                        SSH_STDERR="ssh: connection failed\n", TERM="xterm")
         result = self.run_gpa("-a")
-        self.assertEqual(result.returncode, 1, result.stderr)
-        self.assertEqual([call[1] for call in self.calls()], ["first", "broken", "last"])
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("\n    partial result\n    [FAILED ]", result.stdout)
+        self.assertEqual(result.stderr, "    ssh: connection failed\n    gpa: failed on broken\n")
+        self.assertNotIn("\x1b[", result.stdout)
+
+    def run_pty(self, script, *args):
+        # Drain concurrently: verbose demo output can fill the PTY buffer and
+        # block the child before it exits. Closing the slave gives EOF/EIO.
+        master, slave = pty.openpty()
+        chunks = []
+
+        def drain():
+            while True:
+                try:
+                    chunk = os.read(master, 65536)
+                except OSError as error:
+                    if error.errno == errno.EIO:
+                        break
+                    raise
+                if not chunk:
+                    break
+                chunks.append(chunk)
+
+        reader = threading.Thread(target=drain)
+        reader.start()
+        try:
+            result = subprocess.run(
+                ["bash", str(ROOT / script), *args], env=self.env,
+                stdout=slave, stderr=subprocess.PIPE, text=True, timeout=30,
+            )
+        finally:
+            os.close(slave)
+            reader.join()
+            os.close(master)
+        return result, b"".join(chunks).decode().replace("\r\n", "\n")
+
+    def test_remote_summary_color_respects_terminal_and_no_color(self):
+        self.hosts("broken\n")
+        self.env["SSH_FAIL_HOST"] = "broken"
+        for term, no_color, colored in (("xterm", "", True),
+                                        ("dumb", "", False),
+                                        ("xterm", "1", False)):
+            with self.subTest(term=term, no_color=no_color):
+                self.env.update(TERM=term, NO_COLOR=no_color)
+                self.log.unlink(missing_ok=True)
+                result, output = self.run_pty("bin/gpa", "-a")
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("gpa hosts: 0/1 completed", output)
+                self.assertEqual(self.calls()[0][2],
+                                 f"env GPA_COLOR={'always' if colored else 'never'} gpa")
+                if colored:
+                    self.assertIn("\x1b[31mNeeds attention: broken\x1b[0m", output)
+                else:
+                    self.assertNotIn("\x1b[", output)
+                    self.assertIn("Needs attention: broken", output)
+
+    def test_remote_attention_lists_hosts_in_configuration_order(self):
+        self.hosts("zebra\nhealthy\nalpha\n")
+        self.env["SSH_FAIL_HOST"] = "alpha,zebra"
+        result = self.run_gpa("-a")
+        self.assertEqual(result.returncode, 1)
+        self.assertTrue(result.stdout.endswith(
+            "\ngpa hosts: 1/3 completed\n    Needs attention: zebra, alpha\n"))
 
     def test_invalid_config_is_rejected_before_any_ssh(self):
         for content in (None, "", "# only a comment\n\n", "valid\n-oProxyCommand=evil\n", "valid\nhost other\n", "valid\nhost;echo\n"):
