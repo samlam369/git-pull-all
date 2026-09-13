@@ -270,12 +270,18 @@ def footer(hosts: list[HostState], color: bool = False) -> list[str]:
     return lines
 
 
+def host_heading(host: HostState, total: int, *, live: bool = False) -> str:
+    """Keep host identity/order identical; lifecycle is live-view context."""
+    heading = f"[HOST   ] {host.destination}  ({host.index + 1}/{total})"
+    return f"{heading}  {host.lifecycle}" if live else heading
+
+
 def print_final(hosts: list[HostState], color: bool = False) -> None:
     """Print a retained grouped report, routing each captured record by origin."""
     for position, host in enumerate(hosts, 1):
         if position > 1:
             print()
-        print(f"[HOST   ] {host.destination}  ({position}/{len(hosts)})")
+        print(host_heading(host, len(hosts)))
         for record in host.records:
             target = sys.stdout if record.stream == "stdout" else sys.stderr
             if record.stream == "stderr":
@@ -357,7 +363,6 @@ def run_live(hosts: list[str], command: str, color: bool) -> tuple[list[HostStat
         #status { dock: top; height: 1; padding: 0 1; text-style: bold; }
         #report { height: 1fr; scrollbar-gutter: stable; }
         HostReport { height: auto; padding: 0 1 1 1; }
-        HostReport .host-title { text-style: bold; }
         """
         BINDINGS = [("ctrl+c", "interrupt", "Interrupt")]
 
@@ -409,14 +414,14 @@ def run_live(hosts: list[str], command: str, color: bool) -> tuple[list[HostStat
             )
             for index in sorted(self.dirty):
                 host = self.dispatcher.hosts[index]
-                body = [f"HOST {host.destination}    {host.lifecycle}"]
+                body = [host_heading(host, len(self.dispatcher.hosts), live=True)]
                 body.extend(f"    {record.text}" if record.text else ""
                             for record in host.records)
                 content = Text("\n".join(body))
-                content.highlight_regex(r"(?m)^HOST[^\n]*", "bold")
+                content.highlight_regex(r"(?m)^\[HOST   \][^\n]*", "bold")
                 if color:
                     content.highlight_regex(
-                        r"(?m)(^HOST[^\n]*\s(?:failed|interrupted)$|"
+                        r"(?m)(^\[HOST   \][^\n]*\s(?:failed|interrupted)$|"
                         r"^\s*\[FAILED\s*\][^\n]*|\b[1-9][0-9]* failed\b)",
                         "red",
                     )

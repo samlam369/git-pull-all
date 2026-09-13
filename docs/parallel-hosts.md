@@ -60,6 +60,12 @@ Each section contains:
 3. Verbose details and diagnostics in their original local context.
 4. The remote summary when received, followed by failure information if needed.
 
+Implemented heading convention: both the live view and final report use
+`[HOST   ] alpha  (1/3)`. The live view appends two spaces and the lifecycle,
+such as `running` or `completed`. Repository rows retain four-space indentation
+in both presentations. The storyboard below illustrates behavior, not exact
+heading typography.
+
 The display must distinguish host lifecycle from repository result labels.
 A repository FAILED result can occur while the host is still running.
 Host completion depends on the SSH/remote command's exit status, not parsed
@@ -323,9 +329,9 @@ but it is not visually complete. The following items are the canonical backlog
 for this branch; they must not depend on conversation history or an individual
 maintainer's environment.
 
-### Known gaps
+### Acceptance status and known gaps
 
-1. **Terminal color integration — fix implemented, visual UAC pending:** the
+1. **Terminal color integration — accepted by the user:** the
    default Textual RGB theme caused a dark background on light terminals.
    The app now enables native ANSI colors and the scrollbar's ANSI styles,
    preserving terminal-default foreground/background instead of painting fixed
@@ -333,8 +339,9 @@ maintainer's environment.
    resets and rejects RGB/indexed palette substitutions. User screenshots also
    showed light seams between rows; contrasting application and terminal
    backgrounds are a plausible cause, not a confirmed terminal-renderer
-   diagnosis. Verify those seams disappear on the affected terminal, and check
-   light/dark palettes, transparency, and `NO_COLOR` during final visual UAC.
+   diagnosis. The user confirmed the color fix succeeds on the affected
+   terminal. This item is closed; retain light/dark palette, transparency, and
+   `NO_COLOR` checks for future renderer changes.
 2. **Scrolling during live updates:** keyboard and mouse scrolling cannot
    reliably reach content outside the visible area while refreshes continue.
    The current logical-anchor restoration is a likely interaction point. A fix

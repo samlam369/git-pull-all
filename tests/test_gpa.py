@@ -28,6 +28,17 @@ def load_helper():
 
 
 class GpaTests(unittest.TestCase):
+    def test_live_and_final_host_headings_share_identity_and_order(self):
+        helper = load_helper()
+        for index in (0, 1):
+            for lifecycle in ("starting", "running", "completed", "failed", "interrupted"):
+                with self.subTest(index=index, lifecycle=lifecycle):
+                    host = helper.HostState(index, "same-host", lifecycle=lifecycle)
+                    heading = f"[HOST   ] same-host  ({index + 1}/2)"
+                    self.assertEqual(helper.host_heading(host, 2), heading)
+                    self.assertEqual(helper.host_heading(host, 2, live=True),
+                                     f"{heading}  {lifecycle}")
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -380,6 +391,8 @@ class GpaTests(unittest.TestCase):
         # Native defaults must survive rendering instead of becoming a dark
         # RGB palette, regardless of the terminal's own light/dark colors.
         live = output.split("\x1b[?1049h", 1)[1].split("\x1b[?1049l", 1)[0]
+        self.assertIn("[HOST   ] overflow  (1/1)  running",
+                      re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", live))
         self.assertRegex(live, r"\x1b\[[0-9;]*49[;m]")
         for sgr in re.findall(r"\x1b\[([0-9;]*)m", live):
             self.assertNotRegex(sgr, r"(?:^|;)(?:38|48);(?:2|5);")

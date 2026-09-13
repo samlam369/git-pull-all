@@ -149,10 +149,14 @@ live, and results do not reorder when a host finishes. When all output is
 drained, the interface closes automatically and prints the complete grouped
 report into normal terminal scrollback.
 
+The live view and final report share the heading
+`[HOST   ] server-one  (1/7)` and four-space repository indentation. The live
+view appends the current host status, for example
+`[HOST   ] server-one  (1/7)  running`; the final heading omits that live status.
+
 The live interface uses the terminal's default foreground/background and ANSI
 palette, including the scrollbar, so light/dark colors and transparency remain
-terminal-controlled. Visual confirmation of the reported inter-row background
-seams remains pending on the affected terminal. Scrolling beyond the visible
+terminal-controlled. Scrolling beyond the visible
 area is still not reliable while refreshes are active; the complete report is
 available in normal terminal scrollback after the run. Follow-up UAC work is
 tracked in `docs/parallel-hosts.md`.
