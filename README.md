@@ -7,6 +7,25 @@ to run the same command on a list of SSH hosts.
 I use this to keep my own checkouts up to date. The layout and defaults
 reflect that workflow; there is no service to run or account to create.
 
+Here's what `gpa -a` looks like (excerpt from the simulated demo):
+
+```text
+[HOST   ] server-ok  (1/4)
+    [UPDATED] ~/repos/app               fast-forward          (main)
+    [CURRENT] ~/repos/current           already up to date    (main)
+    [SKIPPED] ~/repos/detached          no upstream           (detached@aaaaaaa)
+    [SKIPPED] ~/repos/scratch           no upstream           (main)
+
+    gpa summary: 4 repos
+        1 updated | 1 current | 2 skipped
+        0 failed  | 0 warnings
+```
+
+Run `bash examples/demo-output.sh` from this checkout to see the full demo,
+including warnings, failed pulls, and an unreachable host. It uses simulated
+Git and SSH results, without network activity or changes to your repositories.
+Add `-v` to include branch and Git output details.
+
 ## What it does
 
 - Finds direct child repositories under `~` and `~/repos`, including hidden
