@@ -1,20 +1,21 @@
 # PRD: concurrent hosts with a live grouped report
 
-Status: basically usable on `feat/parallel-pull`; follow-up UAC work is tracked
-below.
+Status: implementation and user acceptance complete for the current feature
+scope (2026-09-14). Validation limits and work not undertaken are recorded below.
 Branch: `feat/parallel-pull`.
 
 This PRD replaces the earlier proposal for a mixed, host-prefixed terminal
 log. The user accepted the grouped live report direction. Requirements below
 capture that direction and the subsequently accepted behavior decisions.
-The engineering details record the implemented choices. Visual refinement
-will be assessed at final user acceptance (UAC), with no intermediate prototype
-approval gate.
+The engineering details record the implemented choices. Visual refinement was
+assessed through final user acceptance (UAC), without an intermediate prototype
+approval gate. Completion here describes feature readiness, not merge or
+release status; consult Git for branch publication history.
 
 ## Problem and intended outcome
 
-Today `gpa -a` runs one SSH host at a time. Its grouped output makes each
-host's repositories and summary easy to review, but a slow host delays all
+Before this feature, `gpa -a` ran one SSH host at a time. Its grouped output made
+each host's repositories and summary easy to review, but a slow host delayed all
 later hosts. Simply interleaving concurrent output loses that useful grouping.
 
 Run all configured hosts concurrently while retaining a report organized by
@@ -320,19 +321,23 @@ of these dependencies.
 - Startup, renderer, and dependency failures return nonzero. SIGINT terminates
   owned SSH process groups, reaps them, retains partial data, and returns 130.
 
-The user will assess scrolling experience and visual density at final UAC.
-Implement and test the specified behavior first; do not build multiple complete
-versions or add a prototype approval gate. Internal simulations remain useful
-for engineering validation.
+The user assessed the implemented presentation and scrolling through UAC.
+There is no outstanding visual acceptance request for this scope. Internal
+simulations remain useful for regression testing of future changes.
 
 ## Readiness and follow-up workflow
 
-Local UAC has established that the concurrent host feature is basically usable,
-but it is not visually complete. The following items are the canonical backlog
-for this branch; they must not depend on conversation history or an individual
-maintainer's environment.
+Implementation and UAC are complete for the current scope. After installing the
+feature branch on all configured destinations, the user confirmed both `gpa -a`
+and verbose remote operation work normally. This is user-reported real-use
+evidence, distinct from the agent's isolated installation trials and offline
+regression tests. No known functional or visual blocker remains reported.
 
-### Acceptance status and known gaps
+The records below separate completed work, ongoing regression obligations, and
+work not undertaken. They must not depend on conversation history. Completion
+does not mean every possible platform or failure path has been tested.
+
+### Completed work and acceptance evidence
 
 1. **Terminal color integration — accepted by the user:** the
    default Textual RGB theme caused a dark background on light terminals.
@@ -387,14 +392,59 @@ maintainer's environment.
 
    Investigation sources: [T3 0.0.40 core](https://github.com/pingdotgg/t3code/blob/v0.0.40/apps/web/src/terminal/ghostty/core.ts)
    and [DEC 2048 specification](https://gist.github.com/rockorager/e695fb2924d36b2bcf1fff4a3704bd83).
-3. **Installer platform matrix:** the configured destinations have been
+3. **Installer platform matrix — completed for the recorded environments:**
+   the configured destinations have been
    inventoried across Debian 13, Ubuntu 24.04, and Termux. The installer now
    chooses platform-specific package names and uses pkg without sudo on Termux.
    Results, remaining validation limits, and future test procedure are kept in
    [the installation matrix](install-platforms.md), rather than inferred from
    the presence of apt-get or retained only in conversation history.
+4. **Cross-host operation — accepted by the user:** all configured hosts were
+   installed from the feature branch, followed by successful compact and
+   verbose remote runs reported by the user. An earlier two-line FETCH/result
+   observation was traced to remote checkouts still on main, without event
+   support, rather than a failure of the replacement protocol. The installer
+   links its current checkout; it does not fetch or switch branches. Installation
+   success alone therefore does not establish which feature version is active.
+5. **Help and documentation — accepted by the user:** CLI help now explains
+   local versus configured-host scope, options, and examples. The README leads
+   with setup and basic use; detailed installation and SSH behavior live in
+   separate guides linked from the documentation index. Installer diagnostics
+   identify missing packages and failed setup commands without prescribing an
+   alternative privilege mechanism.
 
-### Follow-up checklist
+### Not undertaken or not yet verified
+
+These are scope choices and evidence limits, not findings that the work is
+impossible or unsuitable. They are not required to close this feature; future
+maintainers may pick them up independently.
+
+- A completely bare Termux installation was not tested. Existing prerequisites
+  were retained; actual pkg invocation and mocked missing-package selection
+  were checked. A future clean-environment trial can extend that evidence.
+- Interactive sudo authentication was not tested. The real non-root trial had
+  prerequisites already installed; missing-sudo and package failure diagnostics
+  have isolated regression coverage. This does not establish every sudo policy
+  or interactive authentication path.
+- Dedicated renderer-exception fault injection has not been added. Cleanup is
+  implemented and Ctrl+C has PTY coverage, but those tests should not be read as
+  direct verification of every renderer failure in acceptance criterion 10.
+- Other distributions, broader terminal/version combinations, and macOS/BSD
+  were not validated. The specific terminal investigation above is not a claim
+  about all terminals using the same core.
+- Installer `--check` and `--local-only` options were discussed but not
+  implemented or evaluated through prototypes. Current alternatives are
+  `--no-dependencies` with caller-provided tools and direct local invocation.
+- Reporting the checkout branch/commit and effective executable at installation
+  completion was suggested but not implemented. Separating fresh-clone and
+  existing-checkout feature-branch instructions with failure-stop command
+  chaining is also a possible follow-up; the current guide is not a branch
+  deployment workflow.
+- A fully user-space bootstrap for missing system dependencies without sudo
+  was not implemented or investigated as part of this work. The current
+  installer uses the documented platform package managers.
+
+### Ongoing regression and future validation checklist
 
 - Reproduce UI issues with `examples/demo-output.sh` and isolated fixtures;
   never use live repository updates for visual testing.
@@ -409,11 +459,14 @@ maintainer's environment.
 - Run the repository checks in this document and the Textual-enabled UI suite.
   Exercise overflow, resize, keyboard and mouse scrolling, active refreshes,
   light/dark terminal colors, and the retained final report.
-- Return terminal density and scrolling behavior for final user acceptance only
-  after the known gaps above are resolved; no intermediate prototype approval
-  is required.
+- For future presentation changes, obtain user acceptance after implementation;
+  the current presentation and scrolling acceptance are already complete.
 
 ## Acceptance criteria
+
+These retain the original behavioral contract for future regression work.
+Feature acceptance is recorded above; this list is not a claim that every
+failure permutation has a dedicated test. See the explicit validation limits.
 
 1. A barrier-based mock proves all hosts start while every host remains blocked;
    no completion is needed to launch the next host.
@@ -454,12 +507,12 @@ maintainer's environment.
 
 ## Delivery and validation
 
-Implement the grouped UI and concurrent SSH with isolated simulated fixtures,
-including overflow, scroll anchoring, resize, compatibility, and final scrollback
-output. Present the completed feature for final UAC; visual refinements follow
-that feedback rather than an intermediate prototype comparison. Update script
-headers, nearby comments, README, host-file examples, and the offline demo to
-match the implemented contract. Do not present this PRD as shipped behavior.
+The grouped UI, concurrent SSH, offline demo, and supporting documentation are
+implemented. Regression coverage includes overflow, scroll anchoring, resize,
+compatibility, and final scrollback. Keep script headers, nearby comments,
+user guides, examples, and this record aligned when changing behavior. The
+README and usage references describe the user contract; this PRD also retains
+historical requirements and investigation context.
 
 Run from the repository root before handing off changes:
 
