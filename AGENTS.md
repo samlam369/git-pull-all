@@ -118,12 +118,13 @@ the effects below rather than treating the existing mechanism as mandatory.
 - Do not apply `set -e` mechanically to the main command: failure aggregation
   and arithmetic statuses need deliberate handling. The installer uses
   strict mode because its filesystem operations should stop on failure.
-- The installer supports repeat runs, a narrowly scoped migration, Debian
-  13-verified apt dependency provisioning, and a pinned Textual release in a
-  managed venv. Ubuntu and Termux remain validation targets recorded in
-  `docs/parallel-hosts.md`; do not claim support based only on the presence of
-  `apt-get`. `--no-dependencies` keeps externally provisioned and test
-  environments free of package changes. Protect unrelated user files, report
+- The installer supports repeat runs, a narrowly scoped migration, platform
+  detection for Debian/Ubuntu apt and Termux pkg provisioning, and a pinned
+  Textual release in a managed venv. Keep observed releases and verification
+  limits in `docs/install-platforms.md`; do not infer a distribution from the
+  presence of `apt-get`. Termux uses pkg without sudo. `--no-dependencies`
+  keeps externally provisioned and test environments free of package changes.
+  Protect unrelated user files, report
   network/system effects before running them, and do not guess commands for
   other platforms.
 - Keep dependencies and platform claims explicit. Do not claim portability

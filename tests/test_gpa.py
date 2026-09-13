@@ -799,6 +799,29 @@ class GpaTests(unittest.TestCase):
         self.assertEqual(self.calls()[0][3], "linked")
 
     def test_installer_creates_managed_textual_environment_idempotently(self):
+        self.check_installer_platform("debian")
+
+    def test_installer_provisions_ubuntu_venv(self):
+        self.check_installer_platform("ubuntu")
+
+    def test_installer_uses_termux_pkg_without_sudo_or_debian_packages(self):
+        self.check_installer_platform("termux")
+
+    def test_installer_rejects_unknown_distribution_even_with_apt(self):
+        self.check_installer_platform("unknown")
+
+    def test_installer_stops_after_package_failure(self):
+        self.check_installer_platform("debian", package_failure=True)
+
+    def check_installer_platform(self, platform, package_failure=False):
+        # Supply a fixture OS identity without introducing a production
+        # environment override for a system-owned configuration file.
+        os_release = self.base / "os-release"
+        os_release.write_text(f"ID={platform}\n")
+        installer = self.base / "install.sh"
+        installer.write_text((ROOT / "install.sh").read_text().replace(
+            "/etc/os-release", str(os_release)))
+        self.env.pop("PREFIX", None)
         data_home = self.base / "data"
         install_log = self.base / "python-install.log"
         apt_log = self.base / "apt.log"
@@ -811,6 +834,23 @@ class GpaTests(unittest.TestCase):
             "printf '%s\\n' \"$*\" >> \"$APT_LOG\"\n"
             "[[ \"${1:-}\" != install ]] || : > \"$APT_MARKER\"\n")
         apt.chmod(0o755)
+        if package_failure:
+            apt.write_text("#!/usr/bin/env bash\nexit 42\n")
+        if platform == "termux":
+            prefix = self.base / "termux"
+            (prefix / "bin").mkdir(parents=True)
+            self.env["PREFIX"] = str(prefix)
+            marker = prefix / "bin/termux-info"
+            marker.write_text("#!/usr/bin/env bash\nexit 0\n")
+            marker.chmod(0o755)
+            pkg = prefix / "bin/pkg"
+            pkg.write_bytes(apt.read_bytes())
+            pkg.chmod(0o755)
+            # Any accidental apt/sudo call must fail, even though both exist.
+            apt.write_text("#!/usr/bin/env bash\nexit 98\n")
+            sudo = self.mock_bin / "sudo"
+            sudo.write_text("#!/usr/bin/env bash\nexit 99\n")
+            sudo.chmod(0o755)
         python = self.mock_bin / "python3"
         python.write_text(
             "#!/usr/bin/python3\n"
@@ -824,13 +864,25 @@ class GpaTests(unittest.TestCase):
             " managed.chmod(0o755)\n"
             "sys.exit(0)\n")
         python.chmod(0o755)
+        if platform == "unknown" or package_failure:
+            result = subprocess.run(["bash", str(installer)], env=self.env,
+                                    text=True, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            if platform == "unknown":
+                self.assertIn("Debian, Ubuntu, and Termux only", result.stderr)
+            self.assertFalse(apt_marker.exists())
+            self.assertFalse((data_home / "gpa/venv").exists())
+            self.assertFalse((self.home / ".local/bin/gpa").exists())
+            return
         for _ in range(2):
-            result = subprocess.run(["bash", str(ROOT / "install.sh")],
+            result = subprocess.run(["bash", str(installer)],
                                     env=self.env, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(install_log.read_text(), "installed\n")
-        self.assertEqual(apt_log.read_text().splitlines(),
-                         ["update", "install -y -- python3-venv"])
+        expected = (["install -y python-pip python-ensurepip-wheels"]
+                    if platform == "termux"
+                    else ["update", "install -y -- python3-venv"])
+        self.assertEqual(apt_log.read_text().splitlines(), expected)
         self.assertTrue((data_home / "gpa/venv/bin/python").exists())
 
     def test_remote_dispatch_prefers_installer_managed_python(self):

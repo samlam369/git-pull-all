@@ -42,26 +42,34 @@ currently fixed; there is no repository exclusion option or dry-run mode.
 ## Install
 
 The one-step installer checks Bash, Git, sed, SSH, GNU-compatible `realpath`,
-Python 3.10+, and Python venv support. Its automatic system-package path is
-currently verified on Debian 13: when `apt-get` is available, it installs
-missing Debian package names, using `sudo` when required. This can prompt for
-privilege escalation, uses the package network, and is not rolled back if a
-later step fails.
+Python 3.10+, and Python venv/ensurepip support. It identifies the platform
+before choosing package names:
+
+- Debian and Ubuntu: `apt-get update` and `apt-get install` for missing
+  prerequisites, using `sudo` when not root.
+- Termux: `pkg install` with Termux package names, without `sudo` or direct
+  `apt-get` calls. Python setup includes `python-pip` and
+  `python-ensurepip-wheels`; SSH comes from `openssh`.
+
+Package provisioning uses the network and may prompt for privileges on
+Debian/Ubuntu. It can update shared Python packages to satisfy dependencies;
+partial system-package changes are not rolled back automatically. There is
+no full-system upgrade or autoremove step. See the
+[installation validation matrix](docs/install-platforms.md) for tested releases
+and the limits of that evidence.
 
 It then creates `${XDG_DATA_HOME:-$HOME/.local/share}/gpa/venv` and installs the
 supported Textual 8.2.8 release there. The environment is owned by this tool;
 it avoids modifying system Python or relying on an activated shell environment.
 Reruns reuse it when the requested version is already installed.
 
-Ubuntu and Termux package setup still need environment-specific validation;
-having an `apt-get` command alone does not guarantee Debian package names or
-privilege handling are correct there. Until those paths are completed, install
-the listed commands and Python venv/ensurepip support using the platform's
-package manager before running the normal installer; it can then create the
-managed Textual environment without invoking `apt-get`. Alternatively, fully
-provision Python and Textual 8.2.8 externally and use
-`install.sh --no-dependencies`. Other Linux distributions must use one of these
-paths. macOS/BSD setup is not verified and may need GNU coreutils. The flag
+Other distributions must install the listed commands and Python venv/ensurepip
+support using their own package manager before running the normal installer;
+it can then create the managed Textual environment without system-package
+operations. The existence of `apt-get` alone does not enable provisioning on
+an unknown distribution. Alternatively, fully provision Python and Textual
+8.2.8 externally and use `install.sh --no-dependencies`.
+macOS/BSD setup is not verified and may need GNU coreutils. The flag
 skips all dependency checks, package operations, and managed-venv setup, so the
 caller owns those dependencies. Local-only execution itself remains independent
 of Python and Textual. Remote hosts need Bash, Git, sed, and `env` to receive

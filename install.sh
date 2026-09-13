@@ -7,9 +7,9 @@
 # Usage: ./install.sh [--migrate-dotfiles] [--no-dependencies]
 # Inputs: HOME and optional XDG_DATA_HOME choose installation paths. By default
 # the installer checks Bash, Git, sed, SSH, realpath, Python 3.10+, and venv.
-# Automatic package provisioning is currently verified on Debian 13. When
-# apt-get exists it uses Debian package names (through sudo when not root), then
-# installs Textual 8.2.8 in
+# Debian/Ubuntu use apt-get (through sudo when not root). Termux uses its own
+# pkg command and package names without sudo. Other systems must provide the
+# prerequisites themselves. The installer then installs Textual 8.2.8 in
 # ${XDG_DATA_HOME:-$HOME/.local/share}/gpa/venv. --no-dependencies skips these
 # checks and changes for externally provisioned systems and isolated tests.
 #
@@ -42,42 +42,72 @@ for argument in "$@"; do
 done
 
 if (( install_dependencies )); then
+    # Termux also ships apt-get, but is not Debian: detect its installation
+    # prefix before consulting os-release or choosing package names.
+    platform=external
+    if [[ -n "${PREFIX:-}" && -x "$PREFIX/bin/termux-info" ]]; then
+        platform=termux
+    elif [[ -r /etc/os-release ]]; then
+        # os-release is the OS-owned shell-compatible identity file. Restrict
+        # automatic provisioning to the distributions whose mapping we support.
+        platform_id=$(. /etc/os-release; printf '%s' "${ID:-}")
+        case "$platform_id" in
+            debian|ubuntu) platform=debian ;;
+        esac
+    fi
+    ssh_package=openssh-client
+    python_packages=(python3 python3-venv)
+    venv_packages=(python3-venv)
+    if [[ "$platform" == termux ]]; then
+        ssh_package=openssh
+        python_packages=(python python-pip python-ensurepip-wheels)
+        venv_packages=(python-pip python-ensurepip-wheels)
+    fi
     declare -a packages=()
     command -v git > /dev/null || packages+=(git)
     command -v sed > /dev/null || packages+=(sed)
-    command -v ssh > /dev/null || packages+=(openssh-client)
+    command -v ssh > /dev/null || packages+=("$ssh_package")
     command -v realpath > /dev/null || packages+=(coreutils)
     if ! command -v python3 > /dev/null; then
-        packages+=(python3 python3-venv)
+        packages+=("${python_packages[@]}")
     elif ! python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 10))'; then
         printf 'gpa: Python 3.10 or newer is required; found: %s\n' \
             "$(python3 --version 2>&1)" >&2
         exit 1
-    elif ! python3 -c 'import ensurepip' > /dev/null 2>&1; then
-        packages+=(python3-venv)
+    elif ! python3 -c 'import ensurepip, venv; ensurepip.version()' > /dev/null 2>&1; then
+        packages+=("${venv_packages[@]}")
     fi
 
     if (( ${#packages[@]} )); then
-        # This apt path is verified on Debian 13 only. Ubuntu and Termux remain
-        # explicit test-matrix work: apt-get's presence alone does not prove
-        # these Debian package names or sudo-based privilege handling fit the
-        # environment. See docs/parallel-hosts.md before broadening claims.
-        if ! command -v apt-get > /dev/null; then
-            printf 'gpa: missing system dependencies: %s\n' "${packages[*]}" >&2
-            printf 'gpa: install them with your OS package manager, then rerun install.sh\n' >&2
+        if [[ "$platform" == external ]]; then
+            printf 'gpa: automatic package setup supports Debian, Ubuntu, and Termux only\n' >&2
+            printf 'gpa: provide Git, sed, SSH, GNU realpath, and Python 3.10+ with venv/ensurepip, then rerun install.sh\n' >&2
             exit 1
         fi
         declare -a privilege=()
-        if (( EUID != 0 )); then
-            if ! command -v sudo > /dev/null; then
-                printf 'gpa: sudo is required to install: %s\n' "${packages[*]}" >&2
+        if [[ "$platform" == termux ]]; then
+            if [[ ! -x "$PREFIX/bin/pkg" ]]; then
+                printf 'gpa: Termux package manager unavailable: %s/bin/pkg\n' "$PREFIX" >&2
                 exit 1
             fi
-            privilege=(sudo)
+            printf 'Installing Termux dependencies with pkg: %s\n' "${packages[*]}"
+            "$PREFIX/bin/pkg" install -y "${packages[@]}"
+        else
+            if ! command -v apt-get > /dev/null; then
+                printf 'gpa: apt-get is required to install: %s\n' "${packages[*]}" >&2
+                exit 1
+            fi
+            if (( EUID != 0 )); then
+                if ! command -v sudo > /dev/null; then
+                    printf 'gpa: sudo is required to install: %s\n' "${packages[*]}" >&2
+                    exit 1
+                fi
+                privilege=(sudo)
+            fi
+            printf 'Installing system dependencies with apt: %s\n' "${packages[*]}"
+            "${privilege[@]}" apt-get update
+            "${privilege[@]}" apt-get install -y -- "${packages[@]}"
         fi
-        printf 'Installing system dependencies with apt: %s\n' "${packages[*]}"
-        "${privilege[@]}" apt-get update
-        "${privilege[@]}" apt-get install -y -- "${packages[@]}"
     fi
 
     # Validate again after package setup so a distribution package that does
@@ -88,7 +118,7 @@ if (( install_dependencies )); then
             exit 1
         fi
     done
-    if ! python3 -c 'import sys, ensurepip; raise SystemExit(sys.version_info < (3, 10))'; then
+    if ! python3 -c 'import sys, ensurepip, venv; ensurepip.version(); raise SystemExit(sys.version_info < (3, 10))'; then
         printf 'gpa: Python 3.10+ with venv/ensurepip is required\n' >&2
         exit 1
     fi

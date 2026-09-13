@@ -305,9 +305,9 @@ of these dependencies.
 - `bin/gpa-hosts.py` lives beside the Bash executable; resolving the installed
   `gpa` symlink locates the helper without another installed link. Remote mode
   supports Python 3.10+ and pins Textual 8.2.8 in an installer-managed venv.
-  Automatic package provisioning currently uses Debian package names whenever
-  `apt-get` exists and has been verified only on Debian 13. Ubuntu and Termux
-  behavior remains follow-up work rather than a portability claim.
+  Automatic package provisioning detects Debian/Ubuntu via OS identity and
+  Termux via its prefix/tooling. Debian-family packages use apt-get; Termux
+  packages use pkg without sudo. See `install-platforms.md` for evidence.
 - Supporting remotes emit JSON records after an ASCII record-separator and a
   `GPA1` protocol tag. Malformed records remain inert, readable text. A remote
   that ignores `GPA_EVENT_STREAM=1` is handled as an older plain-text peer.
@@ -387,12 +387,12 @@ maintainer's environment.
 
    Investigation sources: [T3 0.0.40 core](https://github.com/pingdotgg/t3code/blob/v0.0.40/apps/web/src/terminal/ghostty/core.ts)
    and [DEC 2048 specification](https://gist.github.com/rockorager/e695fb2924d36b2bcf1fff4a3704bd83).
-3. **Installer platform matrix:** automatic dependency provisioning is verified
-   in an isolated Debian 13 environment. Ubuntu and Termux remain unverified.
-   Their package names, Python/venv behavior, privilege model, network effects,
-   and repeat-run behavior must be observed before claiming support. In
-   particular, the presence of `apt-get` must not be treated as proof that
-   Debian package names or `sudo` are appropriate on Termux.
+3. **Installer platform matrix:** the configured destinations have been
+   inventoried across Debian 13, Ubuntu 24.04, and Termux. The installer now
+   chooses platform-specific package names and uses pkg without sudo on Termux.
+   Results, remaining validation limits, and future test procedure are kept in
+   [the installation matrix](install-platforms.md), rather than inferred from
+   the presence of apt-get or retained only in conversation history.
 
 ### Follow-up checklist
 
