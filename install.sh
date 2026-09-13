@@ -1,27 +1,169 @@
 #!/usr/bin/env bash
-# Install gpa for the current user by linking ~/.local/bin/gpa to bin/gpa
-# in this checkout. Invoke with Bash, or execute directly; do not source.
+# Install gpa and its dispatcher dependencies for the current user. Link
+# ~/.local/bin/gpa to this checkout so future pulls update the command, and
+# keep Textual isolated in a managed user-level virtual environment.
+# Invoke with Bash, or execute directly; do not source.
 #
-# Usage: ./install.sh [--migrate-dotfiles]
-# Requires: Bash and GNU-compatible realpath with -m support.
-# Effects: creates ~/.local/bin if needed and installs an absolute symlink.
-# The checkout must remain in place; pulling it updates the installed command.
-# Dependencies, shell PATH, and host configuration are managed separately.
+# Usage: ./install.sh [--migrate-dotfiles] [--no-dependencies]
+# Inputs: HOME and optional XDG_DATA_HOME choose installation paths. By default
+# the installer checks Bash, Git, sed, SSH, realpath, Python 3.10+, and venv.
+# Debian/Ubuntu use apt-get (through sudo when not root). Termux uses its own
+# pkg command and package names without sudo. Other systems must provide the
+# prerequisites themselves. The installer then installs Textual 8.2.8 in
+# ${XDG_DATA_HOME:-$HOME/.local/share}/gpa/venv. --no-dependencies skips these
+# checks and changes for externally provisioned systems and isolated tests.
+#
+# Effects: package installation may use the network and modify the OS; the
+# user-level phase creates/updates the managed venv, creates ~/.local/bin, and
+# installs an absolute symlink. The checkout must remain in place. The script
+# does not alter shell PATH or host configuration. Repeated runs preserve the
+# venv when it already has the requested Textual version.
 #
 # Existing links to this checkout are accepted without changes. Other paths
 # are refused, except the specific legacy link when migration is requested.
-# Exit status: 0 when installed/already installed, 2 for invalid arguments;
-# conflicts return 1 and filesystem failures propagate a nonzero status.
+# Stdout reports setup actions; errors and missing-platform guidance use stderr.
+# Exit status: 0 when ready, 2 for invalid arguments; dependency/setup errors,
+# conflicts, and filesystem failures return nonzero without replacing unrelated
+# user paths. A partial dependency install is not rolled back automatically.
 set -euo pipefail
 
-# Validate the invocation before creating directories or changing links.
-migrate=0
-case "${1:-}" in
-    '') ;;
-    --migrate-dotfiles) migrate=1 ;;
-    *) printf 'Usage: install.sh [--migrate-dotfiles]\n' >&2; exit 2 ;;
-esac
-(( $# <= 1 )) || exit 2
+# Preserve the command's diagnostics and status without guessing whether a
+# failure came from privileges, networking, package locks, or package state.
+run_package_setup() {
+    local status
+    if "$@"; then
+        return 0
+    else
+        status=$?
+        printf 'gpa: dependency setup failed while running:' >&2
+        printf ' %q' "$@" >&2
+        printf '\ngpa: see the command output above for details; installation stopped.\n' >&2
+        return "$status"
+    fi
+}
+
+# Validate every option before creating directories, installing packages, or
+# changing links. The options are independent and may appear in either order.
+migrate=0 install_dependencies=1
+for argument in "$@"; do
+    case "$argument" in
+        --migrate-dotfiles) migrate=1 ;;
+        --no-dependencies) install_dependencies=0 ;;
+        *)
+            printf 'Usage: install.sh [--migrate-dotfiles] [--no-dependencies]\n' >&2
+            exit 2
+            ;;
+    esac
+done
+
+if (( install_dependencies )); then
+    # Termux also ships apt-get, but is not Debian: detect its installation
+    # prefix before consulting os-release or choosing package names.
+    platform=external
+    if [[ -n "${PREFIX:-}" && -x "$PREFIX/bin/termux-info" ]]; then
+        platform=termux
+    elif [[ -r /etc/os-release ]]; then
+        # os-release is the OS-owned shell-compatible identity file. Restrict
+        # automatic provisioning to the distributions whose mapping we support.
+        platform_id=$(. /etc/os-release; printf '%s' "${ID:-}")
+        case "$platform_id" in
+            debian|ubuntu) platform=debian ;;
+        esac
+    fi
+    ssh_package=openssh-client
+    python_packages=(python3 python3-venv)
+    venv_packages=(python3-venv)
+    if [[ "$platform" == termux ]]; then
+        ssh_package=openssh
+        python_packages=(python python-pip python-ensurepip-wheels)
+        venv_packages=(python-pip python-ensurepip-wheels)
+    fi
+    declare -a packages=()
+    command -v git > /dev/null || packages+=(git)
+    command -v sed > /dev/null || packages+=(sed)
+    command -v ssh > /dev/null || packages+=("$ssh_package")
+    command -v realpath > /dev/null || packages+=(coreutils)
+    if ! command -v python3 > /dev/null; then
+        packages+=("${python_packages[@]}")
+    elif ! python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 10))'; then
+        printf 'gpa: Python 3.10 or newer is required; found: %s\n' \
+            "$(python3 --version 2>&1)" >&2
+        exit 1
+    elif ! python3 -c 'import ensurepip, venv; ensurepip.version()' > /dev/null 2>&1; then
+        packages+=("${venv_packages[@]}")
+    fi
+
+    if (( ${#packages[@]} )); then
+        if [[ "$platform" == external ]]; then
+            printf 'gpa: automatic package setup supports Debian, Ubuntu, and Termux only\n' >&2
+            printf 'gpa: provide Git, sed, SSH, GNU realpath, and Python 3.10+ with venv/ensurepip, then rerun install.sh\n' >&2
+            exit 1
+        fi
+        declare -a privilege=()
+        if [[ "$platform" == termux ]]; then
+            if [[ ! -x "$PREFIX/bin/pkg" ]]; then
+                printf 'gpa: Termux package manager unavailable: %s/bin/pkg\n' "$PREFIX" >&2
+                exit 1
+            fi
+            printf 'Installing Termux dependencies with pkg: %s\n' "${packages[*]}"
+            run_package_setup "$PREFIX/bin/pkg" install -y "${packages[@]}"
+        else
+            if ! command -v apt-get > /dev/null; then
+                printf 'gpa: apt-get is required to install: %s\n' "${packages[*]}" >&2
+                exit 1
+            fi
+            if (( EUID != 0 )); then
+                if ! command -v sudo > /dev/null; then
+                    printf 'gpa: missing system packages: %s\n' "${packages[*]}" >&2
+                    printf 'gpa: cannot install automatically: running as non-root and sudo was not found.\n' >&2
+                    # Offer commands without choosing a privilege mechanism or
+                    # moving the user-level installation into root's HOME.
+                    printf 'gpa: package setup commands (require root privileges):\n' >&2
+                    printf '  apt-get update\n  apt-get install -y -- %s\n' "${packages[*]}" >&2
+                    printf 'gpa: after resolving dependencies, rerun ./install.sh as this user.\n' >&2
+                    exit 1
+                fi
+                privilege=(sudo)
+            fi
+            printf 'Installing system dependencies with apt: %s\n' "${packages[*]}"
+            run_package_setup "${privilege[@]}" apt-get update
+            run_package_setup "${privilege[@]}" apt-get install -y -- "${packages[@]}"
+        fi
+    fi
+
+    # Validate again after package setup so a distribution package that does
+    # not provide the expected command or Python feature fails before linking.
+    for dependency in git sed ssh realpath python3; do
+        if ! command -v "$dependency" > /dev/null; then
+            printf 'gpa: dependency unavailable after setup: %s\n' "$dependency" >&2
+            exit 1
+        fi
+    done
+    if ! python3 -c 'import sys, ensurepip, venv; ensurepip.version(); raise SystemExit(sys.version_info < (3, 10))'; then
+        printf 'gpa: Python 3.10+ with venv/ensurepip is required\n' >&2
+        exit 1
+    fi
+
+    data_home=${XDG_DATA_HOME:-$HOME/.local/share}
+    venv_dir="$data_home/gpa/venv"
+    if [[ ! -x "$venv_dir/bin/python" ]] ||
+        ! "$venv_dir/bin/python" -c \
+            'import sys, pip; raise SystemExit(sys.version_info < (3, 10))' \
+            > /dev/null 2>&1; then
+        printf 'Creating managed Python environment: %s\n' "$venv_dir"
+        mkdir -p -- "${venv_dir%/*}"
+        # This directory is explicitly owned by gpa. --clear repairs stale
+        # environments after a system Python upgrade without touching siblings.
+        python3 -m venv --clear "$venv_dir"
+    fi
+    if ! "$venv_dir/bin/python" -c \
+        'from importlib.metadata import version; raise SystemExit(version("textual") != "8.2.8")' \
+        > /dev/null 2>&1; then
+        printf 'Installing Textual 8.2.8 in managed Python environment\n'
+        "$venv_dir/bin/python" -m pip install --disable-pip-version-check \
+            'textual==8.2.8'
+    fi
+fi
 
 # Resolve from the script location, so invocation from another working
 # directory still links to this checkout. Use its physical directory path

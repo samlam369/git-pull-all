@@ -11,7 +11,11 @@
 #   the file is data, not shell code. GPA_COLOR=always/never overrides automatic
 #   terminal color detection; nonempty NO_COLOR takes precedence and disables it.
 #   GPA_PROGRESS=always/never overrides automatic terminal progress detection.
-# Interactions: install.sh links this executable into ~/.local/bin; the user
+#   Remote dispatch prefers the installer-managed Python under XDG_DATA_HOME,
+#   falling back to python3 when that environment is absent.
+# Interactions: install.sh links this executable into ~/.local/bin; the adjacent
+#   gpa-hosts.py dispatcher owns concurrent SSH and the optional Textual UI.
+#   The user
 #   manages PATH, host configuration, and Git/SSH authentication separately.
 #   Remote hosts need gpa on their noninteractive PATH. Forward -v and the
 #   caller's color and progress choices; each host uses its own HOME and Git
@@ -19,7 +23,8 @@
 # Effects: git pull --ff-only contacts upstreams and can change Git state and
 #   working trees. Existing hooks, helpers, and autostash settings still apply.
 #   Repeated runs pull again; there is no rollback of earlier successful pulls.
-#   Git terminal prompts are disabled, but SSH/helpers may still prompt or wait.
+#   Git terminal prompts are disabled. Remote SSH uses BatchMode so prompts fail;
+#   SSH configuration still owns verification and timeout policy.
 # Output/status: results and summaries go to stdout, argument/configuration
 #   errors and host failure notices to stderr. Pull diagnostics are captured
 #   in results. Remote output has destination blocks and a host completion
@@ -27,7 +32,9 @@
 #   Exit 0 includes skips; 1 means a pull/SSH/remote command failed;
 #   2 means invalid arguments or local host configuration. Failures do not stop
 #   later repositories/hosts. Remote mode has no additional local update.
-# Requires: Bash, Git, sed; SSH locally and env remotely for -a.
+# Requires: Bash, Git, sed; -a also needs SSH, realpath, and Python 3.10+, plus Textual
+#   8.x when all standard streams are attached to a terminal. Remote
+#   machines need only Bash, Git, sed, and env.
 #   The current implementation is tested on Linux and shared by zsh and fish.
 
 # Parse the entire implementation before running pulls, so updating this
@@ -43,11 +50,33 @@ declare verbose=0 all_hosts=0 arg flags
 for arg in "$@"; do
     case "$arg" in
         --help|-h)
-            printf '%s\n' 'Usage: gpa [-a|--all] [-v|--verbose]' \
-                'Pull repositories under ~ and ~/repos with --ff-only.' \
-                '-a: run on hosts from ${XDG_CONFIG_HOME:-$HOME/.config}/gpa/hosts.' \
-                'GPA_HOSTS_FILE overrides the hosts file. Combine flags as -av.' \
-                '-v: include branch and Git details, including on remote hosts.'
+            printf '%s\n' \
+                'Usage: gpa [-a|--all] [-v|--verbose]' \
+                '       gpa -h|--help' \
+                '' \
+                'Update Git repositories directly under ~ and ~/repos with --ff-only.' \
+                'By default, update this machine. Discovery is not recursive.' \
+                '' \
+                'Options:' \
+                '  -a, --all      Update all configured SSH hosts concurrently instead.' \
+                '                 Each host updates repositories under its own ~ and ~/repos.' \
+                '                 This machine is included only if listed as a destination.' \
+                '  -v, --verbose  Include branch and Git output details on each updated host.' \
+                '  -h, --help     Show this help and exit without updating repositories.' \
+                '' \
+                'SSH hosts:' \
+                '  Default file: ${XDG_CONFIG_HOME:-$HOME/.config}/gpa/hosts' \
+                '  Set GPA_HOSTS_FILE to use another file (one SSH destination per line).' \
+                '  Install gpa on each host and prepare noninteractive SSH access first.' \
+                '' \
+                'Examples:' \
+                '  gpa            Update local repositories.' \
+                '  gpa -v         Update local repositories with verbose details.' \
+                '  gpa -a         Update configured SSH hosts with a live terminal report.' \
+                '  gpa -av        Update configured SSH hosts with verbose details.' \
+                '  gpa -a > log   Write host-labelled plain output to a file.' \
+                '' \
+                'Remote dispatch needs Python 3.10+; the live view needs Textual >=8,<9.'
             return 0
             ;;
         --verbose) verbose=1 ;;
@@ -55,14 +84,16 @@ for arg in "$@"; do
         -[av]*)
             flags=${arg#-}
             if [[ "$flags" == *[!av]* ]]; then
-                printf '%s\n' "Usage: gpa [-a|--all] [-v|--verbose]" >&2
+                printf '%s\n' "gpa: unknown option: $arg" \
+                    'Run gpa --help for options and examples.' >&2
                 exit 2
             fi
             [[ "$flags" == *a* ]] && all_hosts=1
             [[ "$flags" == *v* ]] && verbose=1
             ;;
         *)
-            printf '%s\n' "Usage: gpa [-a|--all] [-v|--verbose]" >&2
+            printf '%s\n' "gpa: unexpected argument: $arg" \
+                'Run gpa --help for options and examples.' >&2
             exit 2
             ;;
     esac
@@ -84,20 +115,56 @@ if [[ "${GPA_PROGRESS:-auto}" != never ]] &&
     progress=1
 fi
 
-if (( all_hosts )); then
-    declare host remote_status=0 host_status host_index=0 completed=0 attention_hosts=''
-    # Use only fixed command strings, never host data or environment values as
-    # shell source. Forward color and verbosity, but not recursive dispatch (-a).
-    # Label destinations locally so a failed connection still has a heading.
-    declare remote_command='env GPA_COLOR=never'
-    [[ -n "$color_red" ]] && remote_command='env GPA_COLOR=always'
-    # Insert only literal policy values into the fixed remote command.
-    if (( progress )); then
-        remote_command+=' GPA_PROGRESS=always gpa'
+# A supporting dispatcher asks for JSON records prefixed by ASCII record
+# separator. Normal local invocation remains human-readable, while the prefix
+# lets the dispatcher distinguish protocol data from output by an older gpa.
+declare event_stream=0
+[[ "${GPA_EVENT_STREAM:-}" == 1 ]] && event_stream=1
+
+__gpa_json_quote() {
+    local value=$1 output='' character byte index
+    for (( index=0; index<${#value}; index++ )); do
+        character=${value:index:1}
+        case "$character" in
+            '"') output+='\"' ;;
+            '\') output+='\\' ;;
+            $'\b') output+='\b' ;;
+            $'\f') output+='\f' ;;
+            $'\n') output+='\n' ;;
+            $'\r') output+='\r' ;;
+            $'\t') output+='\t' ;;
+            *)
+                printf -v byte '%d' "'$character"
+                if (( byte < 32 )); then
+                    printf -v character '\\u%04x' "$byte"
+                fi
+                output+="$character"
+                ;;
+        esac
+    done
+    printf '%s' "$output"
+}
+
+__gpa_event() {
+    local type=$1 repo=$2 text=$3 quoted_type quoted_repo quoted_text
+    quoted_type=$(__gpa_json_quote "$type")
+    quoted_repo=$(__gpa_json_quote "$repo")
+    quoted_text=$(__gpa_json_quote "$text")
+    printf '\036GPA1 {"v":1,"type":"%s","repo":"%s","text":"%s"}\n' \
+        "$quoted_type" "$quoted_repo" "$quoted_text"
+}
+
+__gpa_line() {
+    local type=$1 repo=$2 text=$3
+    if (( event_stream )); then
+        __gpa_event "$type" "$repo" "$text"
     else
-        remote_command+=' GPA_PROGRESS=never gpa'
+        printf '%s\n' "$text"
     fi
-    (( verbose )) && remote_command+=' -v'
+}
+
+if (( all_hosts )); then
+    declare host
     declare hosts_file=${GPA_HOSTS_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/gpa/hosts}
     declare -a hosts=()
     if [[ ! -r "$hosts_file" ]]; then
@@ -120,74 +187,43 @@ if (( all_hosts )); then
         printf 'gpa: no hosts configured in %s\n' "$hosts_file" >&2
         return 2
     fi
-    # Remote progress uses newline-delimited records so read can forward a
-    # pending FETCH before the pull finishes. Render only that record without
-    # a newline; a subsequent clear-line prefix replaces it with the result.
-    # Older hosts still stream ordinary lines. Preserve EOF diagnostics and
-    # finish an outstanding progress line if SSH disconnects mid-pull.
-    __gpa_indent() {
-        local line pending=0 clear=$'\r\033[K'
-        while IFS= read -r line || [[ -n "$line" ]]; do
-            if (( progress )) && [[ "$line" == "$clear"* ]]; then
-                line=${line#"$clear"}
-                printf '\r\033[K    %s' "$line"
-                if [[ "$line" == '[FETCH  ] '* ]]; then
-                    pending=1
-                else
-                    printf '\n'
-                    pending=0
-                fi
-            else
-                (( pending )) && printf '\n'
-                pending=0
-                if [[ -n "$line" ]]; then
-                    printf '    %s\n' "$line"
-                else
-                    printf '\n'
-                fi
-            fi
-        done
-        (( pending )) && printf '\n'
-        return 0
-    }
 
-    # Stream output within host blocks so slow pulls remain visible. Do not
-    # infer repository counts from remote text: older gpa versions may format
-    # results differently, and SSH failures may leave an incomplete summary.
-    # Sequential dispatch keeps blocks together; SSH owns timeout policy.
-    for host in "${hosts[@]}"; do
-        (( host_index++ ))
-        (( host_index > 1 )) && printf '\n'
-        printf '[%-7s] %s  (%d/%d)\n' "HOST" "$host" "$host_index" "${#hosts[@]}"
-        # Keep diagnostics on stderr and wait for its formatter before the
-        # next host. Read SSH's status, not the stdout formatter's exit status.
-        {
-            exec 3> >(__gpa_indent >&2)
-            formatter_pid=$!
-            ssh -q "$host" "$remote_command" 2>&3 3>&-
-            host_status=$?
-            exec 3>&-
-            wait "$formatter_pid"
-            exit "$host_status"
-        } | __gpa_indent
-        host_status=${PIPESTATUS[0]}
-        if (( host_status == 0 )); then
-            (( completed++ ))
-        else
-            attention_hosts+="${attention_hosts:+, }$host"
-            printf '    [%-7s] %s  ssh or remote gpa failed (exit %d)\n' "FAILED" "$host" "$host_status"
-            printf '    gpa: failed on %s\n' "$host" >&2
-            remote_status=1
-        fi
-    done
-    # This footer tracks command completion, not repository totals or warning
-    # counts. A nonzero exit may follow some successful pulls; name the hosts
-    # to revisit without implying that all their repositories failed.
-    printf '\ngpa hosts: %d/%d completed\n' "$completed" "${#hosts[@]}"
-    if [[ -n "$attention_hosts" ]]; then
-        printf '    %sNeeds attention: %s%s\n' "$color_red" "$attention_hosts" "$color_reset"
+    # Keep the helper beside the resolved executable so the install symlink and
+    # a directly invoked checkout use the same implementation. Check Python
+    # before any SSH launch; Textual is validated by the helper only for a fully
+    # interactive terminal because the concurrent plain renderer does not use it.
+    declare script_path script_dir dispatcher color_policy=never progress_policy=never
+    declare data_home python_executable
+    if ! script_path=$(realpath -- "${BASH_SOURCE[0]}"); then
+        printf 'gpa: cannot resolve dispatcher beside %s\n' "${BASH_SOURCE[0]}" >&2
+        return 1
     fi
-    return "$remote_status"
+    script_dir=${script_path%/*}
+    dispatcher="$script_dir/gpa-hosts.py"
+    data_home=${XDG_DATA_HOME:-$HOME/.local/share}
+    python_executable="$data_home/gpa/venv/bin/python"
+    if [[ ! -x "$python_executable" ]]; then
+        python_executable=$(command -v python3 || true)
+    fi
+    if [[ ! -r "$dispatcher" ]] || [[ -z "$python_executable" ]] ||
+        ! "$python_executable" -c \
+            'import sys; raise SystemExit(sys.version_info < (3, 10))'; then
+        printf 'gpa: remote mode requires Python 3.10+ and %s; rerun install.sh\n' \
+            "$dispatcher" >&2
+        return 1
+    fi
+    [[ -n "$color_red" ]] && color_policy=always
+    # Partial redirection selects the plain renderer and disables automatic
+    # FETCH records. Explicit GPA_PROGRESS=always still requests readable lines.
+    if [[ "${GPA_PROGRESS:-auto}" == always ]] ||
+        { [[ "${GPA_PROGRESS:-auto}" != never ]] && [[ -t 0 && -t 1 && -t 2 ]]; }; then
+        progress_policy=always
+    fi
+    declare -a dispatcher_args=("$dispatcher" --color "$color_policy" --progress "$progress_policy")
+    (( verbose )) && dispatcher_args+=(--verbose)
+    dispatcher_args+=("${hosts[@]}")
+    "$python_executable" "${dispatcher_args[@]}"
+    return $?
 fi
 
 declare total=0 updated=0 current=0 skipped=0 failed=0 warnings=0
@@ -222,32 +258,34 @@ __gpa_pull() {
         repo_status="SKIPPED"
         reason="no upstream"
         if (( verbose )); then
-            printf '%s\n' "[$repo_status] $label"
-            [[ -n "$branch" ]] && printf '%s\n' "    Branch: $branch"
-            printf '%s\n' "    Result: $reason"
-            printf '%s\n' ""
+            __gpa_line result "$label" "[$repo_status] $label"
+            [[ -n "$branch" ]] && __gpa_line detail "$label" "    Branch: $branch"
+            __gpa_line detail "$label" "    Result: $reason"
+            __gpa_line detail "$label" ""
         else
             if [[ -n "$branch" ]]; then
-                printf '[%-7s] %-*s  %-20s  (%s)\n' "$repo_status" "$max_label_len" "$label" "$reason" "$branch"
+                printf -v line '[%-7s] %-*s  %-20s  (%s)' "$repo_status" "$max_label_len" "$label" "$reason" "$branch"
             else
-                printf '[%-7s] %-*s  %-20s\n' "$repo_status" "$max_label_len" "$label" "$reason"
+                printf -v line '[%-7s] %-*s  %-20s' "$repo_status" "$max_label_len" "$label" "$reason"
             fi
+            __gpa_line result "$label" "$line"
         fi
         return
     fi
 
     if (( progress )); then
         if [[ -n "$branch" ]]; then
-            printf '\r\033[K[%-7s] %s (%s)' "FETCH" "$label" "$branch"
+            printf -v line '[%-7s] %s (%s)' "FETCH" "$label" "$branch"
         else
-            printf '\r\033[K[%-7s] %s' "FETCH" "$label"
+            printf -v line '[%-7s] %s' "FETCH" "$label"
         fi
-    fi
-
-    # A pipe needs a record terminator for the dispatcher's line reader;
-    # direct terminal output keeps the existing in-place display.
-    if (( progress )) && [[ ! -t 1 ]]; then
-        printf '\n'
+        if (( event_stream )); then
+            __gpa_event fetch "$label" "$line"
+        else
+            printf '\r\033[K%s' "$line"
+            # A pipe needs a terminator; a direct terminal keeps in-place display.
+            [[ -t 1 ]] || printf '\n'
+        fi
     fi
 
     # Determine success from Git's status and change from HEAD movement.
@@ -259,7 +297,7 @@ __gpa_pull() {
     pull_output=${pull_output//$'\r'/}
     after=$(git -C "$repo" rev-parse HEAD 2> /dev/null)
 
-    if (( progress )); then
+    if (( progress && ! event_stream )); then
         printf '\r\033[K'
     fi
 
@@ -318,24 +356,25 @@ __gpa_pull() {
     fi
 
     if (( verbose )); then
-        printf '%s\n' "[$repo_status] $label"
-        [[ -n "$branch" ]] && printf '%s\n' "    Branch: $branch"
-        printf '%s\n' "    Result: $reason"
+        __gpa_line result "$label" "[$repo_status] $label"
+        [[ -n "$branch" ]] && __gpa_line detail "$label" "    Branch: $branch"
+        __gpa_line detail "$label" "    Result: $reason"
         if [[ -n "$details" ]]; then
             while IFS= read -r line; do
-                [[ -n "$line" ]] && printf '%s\n' "    $line"
+                [[ -n "$line" ]] && __gpa_line detail "$label" "    $line"
             done <<< "$details"
         fi
-        printf '%s\n' ""
+        __gpa_line detail "$label" ""
     else
         if [[ -n "$branch" ]]; then
-            printf '[%-7s] %-*s  %-20s  (%s)\n' "$repo_status" "$max_label_len" "$label" "$reason" "$branch"
+            printf -v line '[%-7s] %-*s  %-20s  (%s)' "$repo_status" "$max_label_len" "$label" "$reason" "$branch"
         else
-            printf '[%-7s] %-*s  %-20s\n' "$repo_status" "$max_label_len" "$label" "$reason"
+            printf -v line '[%-7s] %-*s  %-20s' "$repo_status" "$max_label_len" "$label" "$reason"
         fi
+        __gpa_line result "$label" "$line"
         if [[ "$repo_status" == "FAILED" && -n "$details" ]]; then
             while IFS= read -r line; do
-                [[ -n "$line" ]] && printf '%s\n' "    $line"
+                [[ -n "$line" ]] && __gpa_line detail "$label" "    $line"
             done <<< "$details"
         fi
     fi
@@ -373,10 +412,13 @@ printf -v failed_text '%-*s' "$first_width" "$failed_text"
 (( warnings > 0 )) && warning_text="${color_yellow}${warning_text}${color_reset}"
 
 # Verbose repo blocks already end with a blank line.
-(( ! verbose || total == 0 )) && printf '%s\n' ""
-printf 'gpa summary: %d repos\n' "$total"
-printf '    %s | %s | %d skipped\n' "$updated_text" "$current_text" "$skipped"
-printf '    %s | %s\n' "$failed_text" "$warning_text"
+(( ! verbose || total == 0 )) && __gpa_line summary '' ""
+printf -v line 'gpa summary: %d repos' "$total"
+__gpa_line summary '' "$line"
+printf -v line '    %s | %s | %d skipped' "$updated_text" "$current_text" "$skipped"
+__gpa_line summary '' "$line"
+printf -v line '    %s | %s' "$failed_text" "$warning_text"
+__gpa_line summary '' "$line"
 
 (( failed == 0 ))
 
