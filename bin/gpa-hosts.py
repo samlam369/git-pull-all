@@ -360,6 +360,26 @@ def run_live(hosts: list[str], command: str, color: bool) -> tuple[list[HostStat
         pass
 
     class ReportApp(App[None]):
+        def get_driver_class(self):
+            """Use cell mouse coordinates and SIGWINCH on the POSIX driver."""
+            default = super().get_driver_class()
+            if os.name != "posix":
+                return default
+            from textual.drivers.linux_driver import LinuxDriver
+            if default is not LinuxDriver:
+                return default
+
+            class CellMouseDriver(LinuxDriver):
+                def _query_in_band_window_resize(self) -> None:
+                    # Textual 8 couples DEC 2048 to pixel mouse mode 1016.
+                    # T3 0.0.40 advertises 2048 but omits the initial size
+                    # report: clicks then decode outside the screen and clear
+                    # keyboard focus. Keep standard cell-based SGR mouse and
+                    # SIGWINCH instead. Recheck this private hook on upgrades.
+                    pass
+
+            return CellMouseDriver
+
         # Native ANSI defaults let the terminal own foreground/background,
         # including light palettes and transparency. RGB theme backgrounds
         # can contrast with terminal-painted gaps between character rows.

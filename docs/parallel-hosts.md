@@ -345,7 +345,7 @@ maintainer's environment.
    diagnosis. The user confirmed the color fix succeeds on the affected
    terminal. This item is closed; retain light/dark palette, transparency, and
    `NO_COLOR` checks for future renderer changes.
-2. **Scrolling during live updates — fix implemented, visual UAC pending:**
+2. **Scrolling during live updates — accepted by the user:**
    the unconditional 100 ms anchor restoration called `scroll_to` even with
    no layout change, cancelling Textual's navigation animations. A headless
    regression reproduced a Page Down stopping after only a few rows. The fix
@@ -362,8 +362,27 @@ maintainer's environment.
    after keyboard and SGR mouse-wheel input while the child remains running.
    Tests also exercise keyboard and mouse navigation during repeated
    refreshes, earlier-host growth, resize, and input arriving between snapshot
-   and restoration. Final scrollback retains its PTY coverage. Confirm keyboard
-   and mouse behavior on the affected terminal before closing this item.
+   and restoration. Final scrollback retains its PTY coverage.
+   Further user testing narrowed the remaining issue to T3 Code Windows
+   desktop 0.0.40: all navigation works in Windows Terminal, while T3 requires
+   one integrated-panel height adjustment after launch. A probe of the exact
+   tag's Ghostty WASM core confirmed it advertises DEC 2048 but omits the
+   immediate initial size report, sending dimensions only on a real resize.
+   Textual 8 enables pixel mouse mode 1016 as soon as support is advertised.
+   Without dimensions it interprets pixel clicks as cell positions; an
+   out-of-bounds click clears keyboard focus too. A PTY regression reproduces
+   the resulting keyboard failure. The POSIX default driver now skips optional
+   in-band resize negotiation, retaining cell-based SGR mouse and SIGWINCH.
+   This trades pixel-level mouse precision for reliable startup; custom and
+   Windows drivers remain untouched. Recheck the Textual private driver hook
+   on dependency upgrades. The regression covers navigation before any resize
+   and after a normal SIGWINCH. The user confirmed the compatibility fix works
+   on the affected terminal without the manual resize workaround; this item
+   is closed. This reproduction identifies the embedded core tested, not every
+   Ghostty version or application embedding it.
+
+   Investigation sources: [T3 0.0.40 core](https://github.com/pingdotgg/t3code/blob/v0.0.40/apps/web/src/terminal/ghostty/core.ts)
+   and [DEC 2048 specification](https://gist.github.com/rockorager/e695fb2924d36b2bcf1fff4a3704bd83).
 3. **Installer platform matrix:** automatic dependency provisioning is verified
    in an isolated Debian 13 environment. Ubuntu and Termux remain unverified.
    Their package names, Python/venv behavior, privilege model, network effects,
@@ -403,9 +422,8 @@ maintainer's environment.
    EOF without newline, blank lines, long lines, and high-volume stderr work.
 5. Reports several screens long retain all content. Scrolling up stays anchored
    while earlier hosts add output; resizing keeps all sections readable.
-   **Visual UAC pending:** the scrolling fix now has real Textual event-loop
-   coverage for navigation and anchoring; verify the user-reported terminal
-   interaction before marking this criterion fully accepted.
+   **Accepted:** navigation and anchoring have Textual event-loop and PTY
+   coverage, and the user confirmed scrolling works on the affected terminal.
 6. A failed connection and a remote pull failure do not stop a slow successful
    host. The final footer follows all drained output and has correct status.
 7. Terminal completion leaves the full grouped report in normal scrollback;

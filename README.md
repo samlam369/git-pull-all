@@ -161,7 +161,11 @@ wheel scroll the live report while hosts run. Earlier host sections growing
 preserve a stationary reader's host-relative position; active user scrolling
 takes precedence over layout compensation. The complete report remains in
 normal terminal scrollback after the run. The scrolling fix has automated
-coverage and awaits visual UAC, tracked in `docs/parallel-hosts.md`.
+coverage and has passed user acceptance, tracked in `docs/parallel-hosts.md`.
+On POSIX, the live view uses cell-based mouse reporting and ordinary terminal
+resize signals. This avoids a T3 Code 0.0.40 startup issue where pixel mouse
+reporting begins before the terminal supplies its pixel dimensions, disrupting
+both mouse navigation and keyboard focus until the panel is resized.
 
 Each host has a separate lifecycle (`starting`, `running`, `completed`,
 `failed`, or `interrupted`). A failed repository does not finish its host; the

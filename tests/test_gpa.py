@@ -414,6 +414,12 @@ class GpaTests(unittest.TestCase):
             self.assertNotRegex(sgr, r"(?:^|;)(?:38|48);(?:2|5);")
 
     def test_live_pty_navigation_with_stdin_reading_ssh(self):
+        self.check_live_pty_navigation()
+
+    def test_live_pty_navigation_without_initial_in_band_size(self):
+        self.check_live_pty_navigation(missing_initial_size=True)
+
+    def check_live_pty_navigation(self, missing_initial_size=False):
         try:
             import textual  # noqa: F401
         except ImportError:
@@ -439,8 +445,10 @@ class GpaTests(unittest.TestCase):
                                    stderr=slave, start_new_session=True)
         os.close(slave)
         output = bytearray()
+        replied = False
 
         def wait_for(marker, since=0):
+            nonlocal replied
             deadline = time.monotonic() + 5
             while marker not in output[since:]:
                 self.assertNotIn(b"ERROR-shared-terminal-stdin", output)
@@ -453,10 +461,26 @@ class GpaTests(unittest.TestCase):
                         self.fail("live view exited before rendering " + repr(marker))
                     self.assertTrue(chunk)
                     output.extend(chunk)
+                    if (missing_initial_size and not replied
+                            and b"\x1b[?2048$p" in output):
+                        # T3 0.0.40's Ghostty core advertises support but sends
+                        # no initial CSI 48 dimensions until a physical resize.
+                        os.write(master, b"\x1b[?2048;2$y")
+                        replied = True
 
         try:
             wait_for(b"row-014")
             self.assertNotIn(b"row-025", output)
+            if missing_initial_size:
+                if replied:
+                    wait_for(b"\x1b[?1016h")
+                # Mouse clicks are in pixels once mode 1016 is enabled, in
+                # cells otherwise. An out-of-bounds decoded event also clears
+                # Textual keyboard focus, reproducing all three broken inputs.
+                mouse = (b"\x1b[<0;90;90M\x1b[<0;90;90m"
+                         if b"\x1b[?1016h" in output
+                         else b"\x1b[<0;10;5M\x1b[<0;10;5m")
+                os.write(master, mouse)
             # Read real rendered rows after actual terminal escape sequences;
             # final scrollback cannot satisfy these checks while SSH is held.
             start = len(output)
@@ -472,6 +496,16 @@ class GpaTests(unittest.TestCase):
             # SGR mouse wheel down over the report text, not its container API.
             os.write(master, b"\x1b[<65;10;5M" * 4)
             wait_for(b"row-020", start)
+            if missing_initial_size:
+                self.assertNotIn(b"\x1b[?1016h", output)
+                # The compatibility path must still react to normal PTY
+                # resize signals and keep navigation working afterward.
+                fcntl.ioctl(master, termios.TIOCSWINSZ,
+                            struct.pack("HHHH", 20, 80, 0, 0))
+                os.killpg(process.pid, signal.SIGWINCH)
+                start = len(output)
+                os.write(master, b"\x1b[H")
+                wait_for(b"row-000", start)
             self.assertIsNone(process.poll())
             release.touch()
             wait_for(b"gpa hosts: 1/1 completed")
