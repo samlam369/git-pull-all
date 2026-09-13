@@ -50,12 +50,33 @@ declare verbose=0 all_hosts=0 arg flags
 for arg in "$@"; do
     case "$arg" in
         --help|-h)
-            printf '%s\n' 'Usage: gpa [-a|--all] [-v|--verbose]' \
-                'Pull repositories under ~ and ~/repos with --ff-only.' \
-                '-a: run concurrently on hosts from ${XDG_CONFIG_HOME:-$HOME/.config}/gpa/hosts.' \
-                'GPA_HOSTS_FILE overrides the hosts file. Combine flags as -av.' \
-                '-v: include branch and Git details, including on remote hosts.' \
-                'Remote dispatch needs Python 3.10+; live mode needs Textual >=8,<9.'
+            printf '%s\n' \
+                'Usage: gpa [-a|--all] [-v|--verbose]' \
+                '       gpa -h|--help' \
+                '' \
+                'Update Git repositories directly under ~ and ~/repos with --ff-only.' \
+                'By default, update this machine. Discovery is not recursive.' \
+                '' \
+                'Options:' \
+                '  -a, --all      Update all configured SSH hosts concurrently instead.' \
+                '                 Each host updates repositories under its own ~ and ~/repos.' \
+                '                 This machine is included only if listed as a destination.' \
+                '  -v, --verbose  Include branch and Git output details on each updated host.' \
+                '  -h, --help     Show this help and exit without updating repositories.' \
+                '' \
+                'SSH hosts:' \
+                '  Default file: ${XDG_CONFIG_HOME:-$HOME/.config}/gpa/hosts' \
+                '  Set GPA_HOSTS_FILE to use another file (one SSH destination per line).' \
+                '  Install gpa on each host and prepare noninteractive SSH access first.' \
+                '' \
+                'Examples:' \
+                '  gpa            Update local repositories.' \
+                '  gpa -v         Update local repositories with verbose details.' \
+                '  gpa -a         Update configured SSH hosts with a live terminal report.' \
+                '  gpa -av        Update configured SSH hosts with verbose details.' \
+                '  gpa -a > log   Write host-labelled plain output to a file.' \
+                '' \
+                'Remote dispatch needs Python 3.10+; the live view needs Textual >=8,<9.'
             return 0
             ;;
         --verbose) verbose=1 ;;
@@ -63,14 +84,16 @@ for arg in "$@"; do
         -[av]*)
             flags=${arg#-}
             if [[ "$flags" == *[!av]* ]]; then
-                printf '%s\n' "Usage: gpa [-a|--all] [-v|--verbose]" >&2
+                printf '%s\n' "gpa: unknown option: $arg" \
+                    'Run gpa --help for options and examples.' >&2
                 exit 2
             fi
             [[ "$flags" == *a* ]] && all_hosts=1
             [[ "$flags" == *v* ]] && verbose=1
             ;;
         *)
-            printf '%s\n' "Usage: gpa [-a|--all] [-v|--verbose]" >&2
+            printf '%s\n' "gpa: unexpected argument: $arg" \
+                'Run gpa --help for options and examples.' >&2
             exit 2
             ;;
     esac

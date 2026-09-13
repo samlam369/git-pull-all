@@ -90,7 +90,7 @@ and verified environments.
 ```sh
 gpa       # compact results and summary
 gpa -v    # include branch and Git output details
-gpa --help
+gpa --help # explain local/SSH scope, options, and examples
 ```
 
 For example, `~/project` and `~/repos/app` are included if they are Git

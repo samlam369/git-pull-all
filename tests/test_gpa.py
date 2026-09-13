@@ -318,7 +318,27 @@ class GpaTests(unittest.TestCase):
         self.assertEqual(self.calls()[0][3], "override-host")
         self.log.unlink()
         for flag in ("-ax", "--unknown", "unexpected"):
-            self.assertEqual(self.run_gpa(flag).returncode, 2)
+            result = self.run_gpa(flag)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn(flag, result.stderr)
+            self.assertIn("gpa --help", result.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_help_explains_local_and_configured_host_scope_without_work(self):
+        # Help must work even when remote configuration is unavailable. Trap
+        # Git calls as well as SSH so help can safely be used as a setup check.
+        git = self.mock_bin / "git"
+        git.write_text("#!/bin/sh\necho unexpected-git-call >&2\nexit 99\n")
+        git.chmod(0o755)
+        for flag in ("-h", "--help"):
+            result = self.run_gpa("-a", flag)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stderr, "")
+            for phrase in ("By default, update this machine", "-a, --all",
+                           "configured SSH hosts concurrently instead",
+                           "only if listed as a destination", "GPA_HOSTS_FILE",
+                           "-v, --verbose", "-h, --help", "gpa -av"):
+                self.assertIn(phrase, result.stdout)
         self.assertEqual(self.calls(), [])
 
     def run_full_pty(self, *args):
