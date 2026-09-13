@@ -156,8 +156,10 @@ view appends the current host status, for example
 
 The live interface uses the terminal's default foreground/background and ANSI
 palette, including the scrollbar, so light/dark colors and transparency remain
-terminal-controlled. Page Up/Page Down, arrow keys, Home/End, and the mouse
-wheel scroll the live report while hosts run. Earlier host sections growing
+terminal-controlled. The scrollbar thumb uses the same default foreground as
+the main text, including when hovered or dragged. Page Up/Page Down, arrow
+keys, Home/End, and the mouse wheel scroll the live report while hosts run.
+Earlier host sections growing
 preserve a stationary reader's host-relative position; active user scrolling
 takes precedence over layout compensation. The complete report remains in
 normal terminal scrollback after the run. The scrolling fix has automated

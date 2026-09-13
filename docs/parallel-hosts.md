@@ -345,6 +345,10 @@ maintainer's environment.
    diagnosis. The user confirmed the color fix succeeds on the affected
    terminal. This item is closed; retain light/dark palette, transparency, and
    `NO_COLOR` checks for future renderer changes.
+   The scrollbar thumb now follows the terminal's default text color in normal,
+   hover, and drag states, replacing the ANSI theme's blue accent. Its track
+   retains the terminal background; no fixed black color is imposed on dark
+   terminals.
 2. **Scrolling during live updates — accepted by the user:**
    the unconditional 100 ms anchor restoration called `scroll_to` even with
    no layout change, cancelling Textual's navigation animations. A headless

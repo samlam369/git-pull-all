@@ -412,6 +412,8 @@ class GpaTests(unittest.TestCase):
         self.assertRegex(live, r"\x1b\[[0-9;]*49[;m]")
         for sgr in re.findall(r"\x1b\[([0-9;]*)m", live):
             self.assertNotRegex(sgr, r"(?:^|;)(?:38|48);(?:2|5);")
+            # The visible scrollbar follows text, not Textual's ANSI blue.
+            self.assertNotRegex(sgr, r"(?:^|;)(?:34|94)(?:;|$)")
 
     def test_live_pty_navigation_with_stdin_reading_ssh(self):
         self.check_live_pty_navigation()

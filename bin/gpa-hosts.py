@@ -386,7 +386,13 @@ def run_live(hosts: list[str], command: str, color: bool) -> tuple[list[HostStat
         CSS = """
         Screen { layout: vertical; }
         #status { dock: top; height: 1; padding: 0 1; text-style: bold; }
-        #report { height: 1fr; scrollbar-gutter: stable; }
+        #report {
+            height: 1fr;
+            scrollbar-gutter: stable;
+            scrollbar-color: ansi_default;
+            scrollbar-color-hover: ansi_default;
+            scrollbar-color-active: ansi_default;
+        }
         HostReport { height: auto; padding: 0 1 1 1; }
         """
         BINDINGS = [("ctrl+c", "interrupt", "Interrupt")]
@@ -400,8 +406,9 @@ def run_live(hosts: list[str], command: str, color: bool) -> tuple[list[HostStat
 
         def compose(self) -> ComposeResult:
             yield Static("", id="status", markup=False)
-            # Opt the scrollbar into Textual's native ANSI track/thumb styles
-            # as well; otherwise it retains the default theme's RGB colors.
+            # Native ANSI supplies the terminal background for the track; CSS
+            # above replaces its blue thumb with the default text color in
+            # every interaction state, following both light and dark terminals.
             with VerticalScroll(id="report", classes="-ansi-scrollbar"):
                 for host in self.dispatcher.hosts:
                     yield HostReport("", id=f"host-{host.index}", markup=False)
