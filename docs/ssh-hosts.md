@@ -97,7 +97,9 @@ need the updated GPA to honor the forwarded color choice.
 
 SSH uses normal host verification with `BatchMode=yes`: authentication or
 verification requiring a prompt fails that host instead of blocking the
-report. Prepare keys and known hosts through your normal SSH workflow.
+report. GPA passes `ConnectTimeout=15` and `ConnectionAttempts=1` by default
+so offline destinations fail promptly without delaying other concurrent hosts.
+Override the connection timeout with `GPA_CONNECT_TIMEOUT=<seconds>` if needed.
+Prepare keys and known hosts through your normal SSH workflow.
 Remote commands receive no terminal input, and GPA does not allocate an SSH
-terminal. There is no built-in timeout or retry; configure timeout policy in
-your SSH configuration.
+terminal.

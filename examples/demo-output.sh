@@ -42,8 +42,8 @@ case "$1" in
     *) exit 2 ;;
 esac
 [[ "$2" == -o && "$3" == BatchMode=yes ]] || exit 2
-host=$4
-command=$5
+host="${@: -2:1}"
+command="${@: -1:1}"
 case "$host" in
     server-offline)
         sleep 0.05

@@ -24,8 +24,8 @@
 #   aborting on conflict. Contacts upstreams and can change Git state and
 #   working trees. Existing hooks, helpers, and autostash settings still apply.
 #   Repeated runs pull again; there is no rollback of earlier successful pulls.
-#   Git terminal prompts are disabled. Remote SSH uses BatchMode so prompts fail;
-#   SSH configuration still owns verification and timeout policy.
+#   Git terminal prompts are disabled. Remote SSH uses BatchMode with ConnectTimeout=15;
+#   SSH configuration still owns host keys and verification policy.
 # Output/status: results and summaries go to stdout, argument/configuration
 #   errors and host failure notices to stderr. Pull diagnostics are captured
 #   in results. Remote output has destination blocks and a host completion

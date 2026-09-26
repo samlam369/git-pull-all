@@ -66,7 +66,7 @@ class GpaTests(unittest.TestCase):
     def write_ssh(self, body=None):
         if body is None:
             body = (
-                "host, command = sys.argv[4], sys.argv[5]\n"
+                "host, command = sys.argv[-2], sys.argv[-1]\n"
                 "key = 'SSH_VERBOSE_STDOUT' if command.endswith(' gpa -v') else 'SSH_STDOUT'\n"
                 "sys.stdout.write(os.environ.get(key, '')); sys.stdout.flush()\n"
                 "sys.stderr.write(os.environ.get('SSH_STDERR', '')); sys.stderr.flush()\n"
@@ -103,15 +103,29 @@ class GpaTests(unittest.TestCase):
                 result = self.run_gpa(*flags)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 calls = self.calls()
-                self.assertCountEqual([call[3] for call in calls],
+                self.assertCountEqual([call[-2] for call in calls],
                                       ["node-00", "user@server.example", "NODE4"])
                 for call in calls:
-                    self.assertEqual(call[:3], ["-q", "-o", "BatchMode=yes"])
+                    self.assertEqual(call[:7], [
+                        "-q",
+                        "-o", "BatchMode=yes",
+                        "-o", "ConnectTimeout=15",
+                        "-o", "ConnectionAttempts=1",
+                    ])
                     expected = ("env GPA_COLOR=never GPA_PROGRESS=never "
                                 "GPA_EVENT_STREAM=1 gpa")
                     if any("v" in flag for flag in flags):
                         expected += " -v"
-                    self.assertEqual(call[4], expected)
+                    self.assertEqual(call[-1], expected)
+
+    def test_remote_connect_timeout_override(self):
+        self.hosts("node-01\n")
+        self.env["GPA_CONNECT_TIMEOUT"] = "7"
+        result = self.run_gpa("-a")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        self.assertEqual(len(calls), 1)
+        self.assertIn("ConnectTimeout=7", calls[0])
 
     def test_ssh_workers_cannot_consume_dispatcher_input(self):
         self.hosts("reader-one\nreader-two\n")
@@ -134,7 +148,7 @@ class GpaTests(unittest.TestCase):
         barrier.mkdir()
         self.env.update(BARRIER_DIR=str(barrier), HOST_COUNT="4")
         self.write_ssh(
-            "host = sys.argv[4]; barrier = pathlib.Path(os.environ['BARRIER_DIR'])\n"
+            "host = sys.argv[-2]; barrier = pathlib.Path(os.environ['BARRIER_DIR'])\n"
             "(barrier / ('started-' + host)).touch()\n"
             "deadline = time.monotonic() + 5\n"
             "while len(list(barrier.glob('started-*'))) < int(os.environ['HOST_COUNT']):\n"
@@ -151,7 +165,7 @@ class GpaTests(unittest.TestCase):
         release = self.base / "release"
         self.env["RELEASE_FILE"] = str(release)
         self.write_ssh(
-            "host = sys.argv[4]; print('live-' + host, flush=True)\n"
+            "host = sys.argv[-2]; print('live-' + host, flush=True)\n"
             "release = pathlib.Path(os.environ['RELEASE_FILE'])\n"
             "deadline = time.monotonic() + 5\n"
             "while not release.exists():\n"
@@ -210,7 +224,7 @@ class GpaTests(unittest.TestCase):
     def test_failed_hosts_do_not_stop_slow_success(self):
         self.hosts("failed\nslow\npull-failed\n")
         self.write_ssh(
-            "host = sys.argv[4]\n"
+            "host = sys.argv[-2]\n"
             "if host == 'failed':\n print('connection refused', file=sys.stderr, flush=True); sys.exit(255)\n"
             "if host == 'slow':\n print('slow result', flush=True); time.sleep(.1); sys.exit(0)\n"
             "print('[FAILED ] repo pull', flush=True); sys.exit(1)\n")
@@ -261,7 +275,7 @@ class GpaTests(unittest.TestCase):
         (self.mock_bin / "gpa").symlink_to(ROOT / "bin/gpa")
         self.mock_git_current()
         self.hosts("new-host\n")
-        self.write_ssh("import shlex\nargs = shlex.split(sys.argv[5])\nos.execvp(args[0], args)\n")
+        self.write_ssh("import shlex\nargs = shlex.split(sys.argv[-1])\nos.execvp(args[0], args)\n")
         result = self.run_gpa("-a")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("[new-host] [CURRENT] ~/repos/project", result.stdout)
@@ -315,7 +329,7 @@ class GpaTests(unittest.TestCase):
         alternate.write_text("override-host\n")
         self.env["GPA_HOSTS_FILE"] = str(alternate)
         self.assertEqual(self.run_gpa("-a").returncode, 0)
-        self.assertEqual(self.calls()[0][3], "override-host")
+        self.assertEqual(self.calls()[0][-2], "override-host")
         self.log.unlink()
         for flag in ("-ax", "--unknown", "unexpected"):
             result = self.run_gpa(flag)
@@ -675,7 +689,7 @@ class GpaTests(unittest.TestCase):
         barrier.mkdir()
         self.env["BARRIER_DIR"] = str(barrier)
         self.write_ssh(
-            "host = sys.argv[4]; (pathlib.Path(os.environ['BARRIER_DIR']) / host).touch()\n"
+            "host = sys.argv[-2]; (pathlib.Path(os.environ['BARRIER_DIR']) / host).touch()\n"
             "print('began', flush=True)\nwhile True: time.sleep(1)\n")
         process = subprocess.Popen(["bash", str(ROOT / "bin/gpa"), "-a"],
                                    env=self.env, stdout=subprocess.PIPE,
@@ -877,7 +891,7 @@ class GpaTests(unittest.TestCase):
         result = subprocess.run([str(self.home / ".local/bin/gpa"), "-a"],
                                 env=self.env, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.calls()[0][3], "linked")
+        self.assertEqual(self.calls()[0][-2], "linked")
 
     def test_installer_creates_managed_textual_environment_idempotently(self):
         self.check_installer_platform("debian")

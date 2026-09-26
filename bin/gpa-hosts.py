@@ -178,8 +178,13 @@ class Dispatcher:
 
     async def _run_host(self, host: HostState) -> None:
         try:
+            connect_timeout = os.environ.get("GPA_CONNECT_TIMEOUT", "15")
             host.process = await asyncio.create_subprocess_exec(
-                "ssh", "-q", "-o", "BatchMode=yes", host.destination,
+                "ssh", "-q",
+                "-o", "BatchMode=yes",
+                "-o", f"ConnectTimeout={connect_timeout}",
+                "-o", "ConnectionAttempts=1",
+                host.destination,
                 self.remote_command,
                 # BatchMode disables prompts, not stdin forwarding. Inheriting
                 # the terminal lets SSH steal keys and mouse escape sequences
