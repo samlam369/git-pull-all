@@ -114,6 +114,14 @@ case "$*" in
                 printf 'Updating aaaaaaa..bbbbbbb\nFast-forward\n 1 file changed, 2 insertions(+)\n'
                 [[ "$name" != restored ]] || printf 'Applied autostash.\n' ;;
         esac ;;
+    'pull --rebase --autostash')
+        case "$name" in
+            diverged)
+                printf 'fatal: could not apply aaaaaaa\n'
+                exit 1 ;;
+            *) exit 0 ;;
+        esac ;;
+    'rebase --abort') exit 0 ;;
     *) exit 2 ;;
 esac
 exit 0

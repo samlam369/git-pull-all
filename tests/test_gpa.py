@@ -771,6 +771,67 @@ class GpaTests(unittest.TestCase):
         self.assertEqual((checkout / "file").read_text(), "second\n")
         self.assertIn("1 updated", result.stdout); self.assertIn("1 skipped", result.stdout)
 
+    def test_local_diverged_rebase_success(self):
+        remote, seed = self.base / "remote.git", self.base / "seed"
+        self.git("init", "--bare", remote); self.git("init", seed)
+        self.git("-C", seed, "config", "user.email", "test@example.invalid")
+        self.git("-C", seed, "config", "user.name", "Test")
+        (seed / "file").write_text("first\n")
+        self.git("-C", seed, "add", "file"); self.git("-C", seed, "commit", "-m", "first")
+        self.git("-C", seed, "remote", "add", "origin", remote)
+        self.git("-C", seed, "push", "origin", "HEAD")
+        branch = self.git("-C", seed, "branch", "--show-current")
+        self.git("-C", remote, "symbolic-ref", "HEAD", f"refs/heads/{branch}")
+        checkout = self.home / "repos/project"; checkout.parent.mkdir()
+        self.git("clone", remote, checkout)
+        self.git("-C", checkout, "config", "user.email", "test@example.invalid")
+        self.git("-C", checkout, "config", "user.name", "Test")
+
+        (seed / "remote_file").write_text("remote\n")
+        self.git("-C", seed, "add", "remote_file"); self.git("-C", seed, "commit", "-m", "remote")
+        self.git("-C", seed, "push", "origin", "HEAD")
+
+        (checkout / "local_file").write_text("local\n")
+        self.git("-C", checkout, "add", "local_file"); self.git("-C", checkout, "commit", "-m", "local")
+
+        result = self.run_gpa("-v")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((checkout / "remote_file").read_text(), "remote\n")
+        self.assertEqual((checkout / "local_file").read_text(), "local\n")
+        self.assertIn("1 updated", result.stdout)
+        self.assertIn("rebased", result.stdout)
+
+    def test_local_diverged_conflict_aborted_cleanly(self):
+        remote, seed = self.base / "remote.git", self.base / "seed"
+        self.git("init", "--bare", remote); self.git("init", seed)
+        self.git("-C", seed, "config", "user.email", "test@example.invalid")
+        self.git("-C", seed, "config", "user.name", "Test")
+        (seed / "file").write_text("first\n")
+        self.git("-C", seed, "add", "file"); self.git("-C", seed, "commit", "-m", "first")
+        self.git("-C", seed, "remote", "add", "origin", remote)
+        self.git("-C", seed, "push", "origin", "HEAD")
+        branch = self.git("-C", seed, "branch", "--show-current")
+        self.git("-C", remote, "symbolic-ref", "HEAD", f"refs/heads/{branch}")
+        checkout = self.home / "repos/project"; checkout.parent.mkdir()
+        self.git("clone", remote, checkout)
+        self.git("-C", checkout, "config", "user.email", "test@example.invalid")
+        self.git("-C", checkout, "config", "user.name", "Test")
+
+        (seed / "file").write_text("remote conflict\n")
+        self.git("-C", seed, "commit", "-am", "remote conflict")
+        self.git("-C", seed, "push", "origin", "HEAD")
+
+        (checkout / "file").write_text("local conflict\n")
+        self.git("-C", checkout, "commit", "-am", "local conflict")
+
+        result = self.run_gpa("-v")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("1 failed", result.stdout)
+        git_dir = checkout / ".git"
+        self.assertFalse((git_dir / "rebase-merge").exists())
+        self.assertFalse((git_dir / "rebase-apply").exists())
+        self.assertEqual((checkout / "file").read_text(), "local conflict\n")
+
     def test_self_update_finishes_already_loaded_bash(self):
         checkout = self.home / "repos/git-pull-all"
         (checkout / ".git").mkdir(parents=True)

@@ -20,7 +20,8 @@
 #   Remote hosts need gpa on their noninteractive PATH. Forward -v and the
 #   caller's color and progress choices; each host uses its own HOME and Git
 #   configuration.
-# Effects: git pull --ff-only contacts upstreams and can change Git state and
+# Effects: git pull prefers --ff-only and falls back to safe rebase with autostash,
+#   aborting on conflict. Contacts upstreams and can change Git state and
 #   working trees. Existing hooks, helpers, and autostash settings still apply.
 #   Repeated runs pull again; there is no rollback of earlier successful pulls.
 #   Git terminal prompts are disabled. Remote SSH uses BatchMode so prompts fail;
@@ -54,7 +55,7 @@ for arg in "$@"; do
                 'Usage: gpa [-a|--all] [-v|--verbose]' \
                 '       gpa -h|--help' \
                 '' \
-                'Update Git repositories directly under ~ and ~/repos with --ff-only.' \
+                'Update Git repositories directly under ~ and ~/repos (--ff-only or safe rebase).' \
                 'By default, update this machine. Discovery is not recursive.' \
                 '' \
                 'Options:' \
@@ -289,11 +290,23 @@ __gpa_pull() {
     fi
 
     # Determine success from Git's status and change from HEAD movement.
-    # Capturing output keeps per-repository results together; --ff-only avoids
-    # creating a merge commit for diverged branches, but does not bypass config.
+    # Capturing output keeps per-repository results together; prefer --ff-only
+    # to avoid rewriting history when not diverged, falling back to rebase with
+    # autostash on divergence and aborting cleanly on conflict.
     before=$(git -C "$repo" rev-parse HEAD 2> /dev/null)
     pull_output=$(GIT_TERMINAL_PROMPT=0 git -C "$repo" pull --ff-only 2>&1)
     pull_status=$?
+
+    if (( pull_status != 0 )); then
+        if rebase_output=$(GIT_TERMINAL_PROMPT=0 git -C "$repo" pull --rebase --autostash 2>&1); then
+            pull_output=$rebase_output
+            pull_status=0
+        else
+            git -C "$repo" rebase --abort 2> /dev/null
+            pull_output="$rebase_output"
+        fi
+    fi
+
     pull_output=${pull_output//$'\r'/}
     after=$(git -C "$repo" rev-parse HEAD 2> /dev/null)
 

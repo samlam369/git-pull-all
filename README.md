@@ -36,7 +36,8 @@ Add `-v` to include branch and Git output details.
 
 - Finds direct child repositories under `~` and `~/repos`, including hidden
   directories, directory symlinks, and linked worktrees.
-- Runs `git pull --ff-only` on the current branch when it has an upstream.
+- Runs `git pull --ff-only` on the current branch when it has an upstream,
+  falling back to `--rebase --autostash` if divergent and conflict-free.
 - Reports updated, unchanged, skipped, and failed repositories, then a summary.
 - Optionally starts the operation concurrently on configured SSH hosts and
   presents their results in file order.
@@ -175,8 +176,9 @@ configuration paths, output controls, completion states, and connection policy.
 
 ## Effects and trust
 
-This command updates working trees. `--ff-only` rejects divergent histories,
-but it is not a preview or a backup. Existing Git configuration still applies,
+This command updates working trees. Pulls prefer `--ff-only` and fall back to
+`--rebase --autostash` when branches diverge, aborting cleanly on conflict.
+It is not a preview or a backup. Existing Git configuration still applies,
 including credential helpers, hooks, filters, and autostash settings. Use it
 with repositories and configuration you trust, as you would a manual pull.
 

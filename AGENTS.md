@@ -109,7 +109,8 @@ the effects below rather than treating the existing mechanism as mandatory.
   compatible unless the task explicitly changes that contract.
 - Discovery currently covers direct children of HOME and HOME/repos,
   including hidden directories, directory symlinks, and linked worktrees.
-- Pulls currently use `--ff-only` and skip branches without an upstream.
+- Pulls prefer `--ff-only`, fall back to `--rebase --autostash` when divergent
+  (aborting cleanly on conflict), and skip branches without an upstream.
   Changes to pull policy, failure aggregation, or exit statuses affect user
   expectations and should be reflected in documentation and tests.
 - Remote mode validates the complete host list before connecting, invokes a
